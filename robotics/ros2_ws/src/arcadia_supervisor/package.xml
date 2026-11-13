@@ -1,0 +1,14 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>arcadia_supervisor</name>
+  <version>0.1.0</version>
+  <description>Webots C++ Supervisor: procedurally spawns the farm from the backend world-config JSON, owns crop ground truth, emits proximity-based (mock CV) events, performs tow mechanics.</description>
+  <maintainer email="shachcha01@gmail.com">ARCADIA</maintainer>
+  <license>MIT</license>
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <depend>rclcpp</depend>
+  <depend>arcadia_msgs</depend>
+  <depend>std_msgs</depend>
+  <export><build_type>ament_cmake</build_type></export>
+</package>

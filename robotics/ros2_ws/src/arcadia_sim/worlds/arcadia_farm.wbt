@@ -1,0 +1,48 @@
+#VRML_SIM R2025a utf8
+# ARCADIA digital-twin world. Deliberately minimal: the C++ supervisor procedurally spawns the
+# farm (terrain plane, hex crops, docks, storage, robots) from the backend's world-config JSON.
+
+EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/objects/backgrounds/protos/TexturedBackground.proto"
+EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/objects/backgrounds/protos/TexturedBackgroundLight.proto"
+EXTERNPROTO "../protos/ArcadiaUGV.proto"
+EXTERNPROTO "../protos/ArcadiaAGV.proto"
+EXTERNPROTO "../protos/ArcadiaUAV.proto"
+
+WorldInfo {
+  title "ARCADIA farm"
+  info [ "Project ARCADIA - autonomous agricultural digital twin" ]
+  basicTimeStep 32
+  FPS 30
+  optimalThreadCount 2
+  coordinateSystem "ENU"
+  contactProperties [
+    ContactProperties { material1 "default" material2 "default" coulombFriction [ 1.2 ] softCFM 0.001 }
+  ]
+}
+Viewpoint {
+  orientation -0.28 0.25 0.93 1.75
+  position 40 -90 60
+  follow ""
+}
+TexturedBackground { texture "noon_cloudy_empty" }
+TexturedBackgroundLight { texture "noon_cloudy_empty" castShadows FALSE }
+DEF GROUND Solid {
+  name "ground"
+  children [
+    Shape {
+      appearance PBRAppearance { baseColor 0.33 0.26 0.17 roughness 1 metalness 0 }
+      geometry DEF GROUND_PLANE Plane { size 600 600 }
+    }
+  ]
+  boundingObject Plane { size 600 600 }
+  locked TRUE
+}
+DEF SUPERVISOR Robot {
+  name "arcadia_supervisor"
+  controller "<extern>"
+  supervisor TRUE
+  children [ Receiver { name "rx" } ]
+}
+DEF FARM Group {
+  children [ ]
+}

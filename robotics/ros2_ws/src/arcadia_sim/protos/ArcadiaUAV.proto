@@ -1,0 +1,48 @@
+#VRML_SIM R2025a utf8
+# ARCADIA Scout UAV: kinematic quadrotor (no Physics node -> moved by its own supervisor-enabled
+# controller). Spinning propeller motors are purely visual to stay cheap on integrated graphics.
+# template language: javascript
+
+PROTO ArcadiaUAV [
+  field SFVec3f    translation  0 0 0.3
+  field SFRotation rotation     0 0 1 0
+  field SFString   name         "uav-1"
+  field SFString   controller   "<extern>"
+]
+{
+  Robot {
+    translation IS translation
+    rotation IS rotation
+    name IS name
+    customData "scout_uav"
+    controller IS controller
+    supervisor TRUE
+    children [
+      # body
+      Shape { appearance PBRAppearance { baseColor 0.36 0.78 1 roughness 0.4 metalness 0.3 } geometry Box { size 0.3 0.3 0.1 } }
+      # multispectral camera gimbal
+      Pose { translation 0.1 0 -0.08 children [ Shape { appearance PBRAppearance { baseColor 0.05 0.05 0.05 } geometry Sphere { radius 0.05 subdivision 1 } } ] }
+      # ultra-thin solar film
+      Pose { translation 0 0 0.051 children [ Shape { appearance PBRAppearance { baseColor 0.1 0.15 0.4 metalness 0.7 roughness 0.15 } geometry Box { size 0.28 0.28 0.004 } } ] }
+      GPS { name "gps" }
+      InertialUnit { name "imu" }
+      Gyro { name "gyro" }
+      Accelerometer { name "accel" }
+      %<
+        const arms = [[1, 0.28, 0.28], [2, -0.28, 0.28], [3, -0.28, -0.28], [4, 0.28, -0.28]];
+        for (const [i, x, y] of arms) {
+      >%
+      Pose { translation %<= x/2 >% %<= y/2 >% 0 rotation 0 0 1 %<= Math.atan2(y, x) >% children [ Shape { appearance PBRAppearance { baseColor 0.15 0.15 0.15 } geometry Box { size 0.36 0.03 0.03 } } ] }
+      HingeJoint {
+        jointParameters HingeJointParameters { axis 0 0 1 anchor %<= x >% %<= y >% 0.03 }
+        device [ RotationalMotor { name "prop%<= i >%" maxVelocity 100 } ]
+        endPoint Solid {
+          translation %<= x >% %<= y >% 0.03
+          name "prop%<= i >%_solid"
+          children [ Shape { appearance PBRAppearance { baseColor 0.9 0.9 0.9 transparency 0.3 } geometry Box { size 0.26 0.03 0.005 } } ]
+        }
+      }
+      %< } >%
+    ]
+  }
+}

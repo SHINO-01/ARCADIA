@@ -1,0 +1,112 @@
+# ARCADIA web stack. Only the web tier is containerised; ROS 2 + Webots run natively (see robotics/).
+name: arcadia
+
+x-backend: &backend
+  build: ./backend
+  env_file: .env
+  environment:
+    ARCADIA_DATABASE_URL: postgresql+asyncpg://arcadia:${POSTGRES_PASSWORD:-arcadia}@postgres:5432/arcadia
+    ARCADIA_REDIS_URL: redis://redis:6379/0
+    ARCADIA_ROSBRIDGE_URL: ${ARCADIA_ROSBRIDGE_URL:-ws://host.docker.internal:9090}
+    ARCADIA_BRIDGE_MODE: ${ARCADIA_BRIDGE_MODE:-auto}
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
+  depends_on:
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+  restart: unless-stopped
+
+services:
+  caddy:
+    image: caddy:2-alpine
+    ports:
+      - "${HTTP_PORT:-8080}:80"
+      - "${HTTPS_PORT:-8443}:443"
+    volumes:
+      - ./infra/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - api
+      - web
+    restart: unless-stopped
+
+  api:
+    <<: *backend
+    command: ["api"]
+    mem_limit: 768m
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "http://localhost:8000/api/health"]
+      interval: 15s
+      timeout: 3s
+      retries: 10
+
+  worker:
+    <<: *backend
+    command: ["worker"]
+    environment:
+      ARCADIA_DATABASE_URL: postgresql+asyncpg://arcadia:${POSTGRES_PASSWORD:-arcadia}@postgres:5432/arcadia
+      ARCADIA_REDIS_URL: redis://redis:6379/0
+      CELERY_CONCURRENCY: "2"
+    mem_limit: 512m
+    depends_on:
+      api:
+        condition: service_healthy
+
+  beat:
+    <<: *backend
+    command: ["beat"]
+    mem_limit: 256m
+    depends_on:
+      api:
+        condition: service_healthy
+
+  web:
+    build:
+      context: ./frontend
+      args:
+        VITE_MAPBOX_TOKEN: ${VITE_MAPBOX_TOKEN:-}
+        VITE_WEBOTS_STREAM_URL: ${VITE_WEBOTS_STREAM_URL:-ws://localhost:1234}
+    mem_limit: 128m
+    restart: unless-stopped
+
+  postgres:
+    image: timescale/timescaledb:latest-pg17
+    environment:
+      POSTGRES_USER: arcadia
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-arcadia}
+      POSTGRES_DB: arcadia
+    command: ["postgres", "-c", "shared_buffers=128MB", "-c", "max_connections=60", "-c", "timescaledb.telemetry_level=off"]
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    ports:
+      - "${POSTGRES_PORT:-55432}:5432"
+    mem_limit: 512m
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U arcadia -d arcadia"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "128mb", "--maxmemory-policy", "allkeys-lru"]
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    mem_limit: 160m
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+volumes:
+  pg_data:
+  caddy_data:
+  caddy_config:

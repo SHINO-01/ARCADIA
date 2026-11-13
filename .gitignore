@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Node
+node_modules/
+frontend/dist/
+*.local
+
+# ROS 2 / colcon
+robotics/ros2_ws/build/
+robotics/ros2_ws/install/
+robotics/ros2_ws/log/
+robotics/.pixi/
+.pixi/
+
+# Webots
+robotics/webots/controllers/*/build/
+robotics/webots/controllers/**/*.o
+robotics/webots/worlds/.*.wbproj
+*.wbproj
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+
+# Misc
+.DS_Store
+*.log
+logs/
+.idea/
+.vscode/
+.run/

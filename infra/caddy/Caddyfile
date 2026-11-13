@@ -1,0 +1,50 @@
+# ARCADIA reverse proxy: one origin for the SPA, the API, the telemetry WebSocket and the
+# Webots 3D stream. HTTP on :80 for local dev; :443 uses Caddy's internal CA (self-signed).
+{
+	auto_https disable_redirects
+	admin off
+}
+
+(arcadia) {
+	encode zstd gzip
+
+	# FastAPI (REST + WebSocket upgrades are transparent in Caddy)
+	handle /api/* {
+		reverse_proxy api:8000
+	}
+	handle /ws/* {
+		reverse_proxy api:8000
+	}
+
+	# rosbridge passthrough (optional direct channel for ROS tooling in the browser)
+	handle /rosbridge* {
+		uri strip_prefix /rosbridge
+		reverse_proxy host.docker.internal:9090
+	}
+
+	# Webots streaming server (W3D over WebSocket) running natively on the host
+	handle /webots-stream* {
+		uri strip_prefix /webots-stream
+		reverse_proxy host.docker.internal:1234
+	}
+
+	# React SPA
+	handle {
+		reverse_proxy web:80
+	}
+
+	header {
+		X-Content-Type-Options nosniff
+		Referrer-Policy strict-origin-when-cross-origin
+		-Server
+	}
+}
+
+:80 {
+	import arcadia
+}
+
+localhost:443, :443 {
+	tls internal
+	import arcadia
+}
