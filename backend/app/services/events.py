@@ -61,9 +61,34 @@ async def handle_event(evt: SimEvent, farm_id: str | None) -> None:
             log.info("Simulation loaded world for farm %s (%s)", farm_id, evt.payload)
         elif kind == "robot_power":
             await fleet.update_robot(evt.robot_id or "", active=bool(evt.payload.get("active", True)))
+        elif kind == "robot_online":
+            await _robot_online(evt)
     except Exception:  # never let one bad event kill the bridge loop
         log.exception("Failed handling event %s", evt.model_dump())
     await fleet.publish_dashboard({"t": "event", "event": evt.model_dump()})
+
+
+async def _robot_online(evt: SimEvent) -> None:
+    """A controller (re)booted: anything we believed it was doing is gone. Fail in-flight missions,
+    close its incidents and reset it to a clean idle state so the dispatcher can use it again."""
+    if not evt.robot_id:
+        return
+    active = bool(evt.payload.get("active", True))
+    async with session_scope() as s:
+        await s.execute(update(Mission).where(Mission.robot_id == evt.robot_id,
+                                              Mission.status.in_(("queued", "dispatched", "running")))
+                        .values(status="failed", completed_at=_now(), result={"reason": "robot controller restarted"}))
+        await s.execute(update(Incident).where(Incident.robot_id == evt.robot_id,
+                                               Incident.state.in_(("open", "acknowledged", "recovering")))
+                        .values(state="resolved", resolved_at=_now()))
+        await s.execute(update(Robot).where(Robot.id == evt.robot_id).values(
+            status="idle" if active else "offline", active=active, fault=None, current_mission_id=None,
+            battery_pct=float(evt.payload.get("battery_pct", 100.0))))
+    await fleet.update_robot(evt.robot_id, status="idle" if active else "offline", active=active, fault=None,
+                             current_mission_id=None, mission_id=None, manual_override=False,
+                             battery_pct=float(evt.payload.get("battery_pct", 100.0)))
+    await fleet.publish_dashboard({"t": "incident_resolved", "robot_id": evt.robot_id})
+    log.info("robot %s online (%s)", evt.robot_id, evt.payload.get("type"))
 
 
 async def _cell_observed(evt: SimEvent, farm_id: str | None) -> None:

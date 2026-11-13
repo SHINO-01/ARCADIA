@@ -18,6 +18,19 @@ FAULT_PARAMS = {
 }
 
 
+# Faults that make physical sense per platform (a UAV has no drive motors to jam).
+FAULTS_BY_TYPE = {
+    "scout_uav": ["battery_drop", "network_latency", "sensor_glitch"],
+}
+
+
+def allowed_faults(robot_type: str | None, allowed: list[str] | None = None) -> list[str]:
+    kinds = FAULTS_BY_TYPE.get(robot_type or "", list(FAULT_PARAMS))
+    if allowed:
+        kinds = [k for k in kinds if k in allowed] or kinds
+    return kinds
+
+
 def default_config() -> ChaosConfig:
     return ChaosConfig(enabled=settings.chaos_enabled, interval_s=settings.chaos_interval_s,
                        probability=settings.chaos_probability)
@@ -39,9 +52,9 @@ async def set_config(cfg: ChaosConfig) -> ChaosConfig:
 
 
 def build_fault_command(robot_id: str, kind: str | None, params: dict | None, rng: random.Random | None = None,
-                        allowed: list[str] | None = None) -> Command:
+                        allowed: list[str] | None = None, robot_type: str | None = None) -> Command:
     rng = rng or random.Random()
-    kind = kind or rng.choice(allowed or list(FAULT_PARAMS))
+    kind = kind or rng.choice(allowed_faults(robot_type, allowed))
     params = params or FAULT_PARAMS[kind](rng)
     return Command(kind="chaos", robot_id=robot_id, payload={"fault": kind, "params": params, "source": "chaos_engine"})
 

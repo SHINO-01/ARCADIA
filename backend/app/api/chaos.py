@@ -34,7 +34,7 @@ async def inject(body: ChaosInject):
         robot_id = random.choice(targets)
     elif robot_id not in live:
         raise HTTPException(404, "robot not found in live fleet")
-    cmd = chaos_svc.build_fault_command(robot_id, body.kind, body.params or None)
+    cmd = chaos_svc.build_fault_command(robot_id, body.kind, body.params or None, robot_type=live[robot_id].get("type"))
     cmd.payload["source"] = "operator"
     await fleet.send_command(cmd)
     await fleet.publish_dashboard({"t": "chaos", "robot_id": robot_id, "fault": cmd.payload["fault"], "params": cmd.payload["params"]})

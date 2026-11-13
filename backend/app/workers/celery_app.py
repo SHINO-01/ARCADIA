@@ -19,6 +19,7 @@ celery_app.conf.update(
     task_default_queue="dispatch",
     beat_schedule={
         "auto-dispatch": {"task": "arcadia.dispatch.tick", "schedule": settings.auto_dispatch_interval_s},
+        "mission-watchdog": {"task": "arcadia.dispatch.watchdog", "schedule": 30.0},
         "chaos-tick": {"task": "arcadia.chaos.tick", "schedule": 10.0},
         "energy-tick": {"task": "arcadia.energy.tick", "schedule": settings.energy_tick_s},
         "fleet-snapshot": {"task": "arcadia.persist.fleet_snapshot", "schedule": 15.0},

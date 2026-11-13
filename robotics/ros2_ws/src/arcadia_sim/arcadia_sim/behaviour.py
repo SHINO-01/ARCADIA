@@ -70,8 +70,9 @@ class Behaviour:
         return self.fault is not None and self.fault.kind in ("motor_jam", "battery_drop")
 
     # ------------------------------------------------------------- events
-    def emit(self, kind: str, severity: str = "INFO", h3: str = "", **payload) -> None:
-        self.events.append({"kind": kind, "robot_id": self.robot_id, "h3": h3, "severity": severity,
+    def emit(self, event: str, severity: str = "INFO", h3: str = "", **payload) -> None:
+        """Queue a domain event. Payload keys are free-form (e.g. kind=<mission kind>)."""
+        self.events.append({"kind": event, "robot_id": self.robot_id, "h3": h3, "severity": severity,
                             "mission_id": (self.mission or {}).get("mission_id", "") if self.mission else payload.pop("mission_id", ""),
                             "payload": payload})
 

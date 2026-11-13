@@ -25,7 +25,12 @@ stop_one() {
   local name="$1"
   if [[ "$name" == "api" ]]; then
     local p; p="$(api_pid)"
-    [[ -n "$p" ]] && kill "$p" 2>/dev/null && echo "stopped api (pid $p)"
+    if [[ -n "$p" ]]; then
+      kill "$p" 2>/dev/null
+      for _ in $(seq 1 10); do kill -0 "$p" 2>/dev/null || break; sleep 0.5; done
+      kill -0 "$p" 2>/dev/null && kill -9 "$p" 2>/dev/null
+      echo "stopped api (pid $p)"
+    fi
     rm -f "$RUN/api.pid"; return
   fi
   if [[ -f "$RUN/$name.pid" ]]; then
@@ -41,7 +46,7 @@ case "${1:-start}" in
       ss -ltn 2>/dev/null | grep -q ":${ARCADIA_API_PORT:-8000} " || break; sleep 0.5
     done
     (cd "$ROOT/backend" && "$PY/alembic" upgrade head >/dev/null)
-    start_one api "$PY/uvicorn" app.main:app --port "${ARCADIA_API_PORT:-8000}" --ws-ping-interval 20
+    start_one api "$PY/uvicorn" app.main:app --port "${ARCADIA_API_PORT:-8000}" --ws-ping-interval 20 --timeout-graceful-shutdown 3
     start_one worker "$PY/celery" -A app.workers.celery_app:celery_app worker -Q dispatch,chaos,telemetry -c 2 -l INFO
     start_one beat "$PY/celery" -A app.workers.celery_app:celery_app beat -l INFO ;;
   stop) for n in beat worker api; do stop_one "$n"; done ;;

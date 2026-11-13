@@ -90,6 +90,35 @@ def dispatch_mission(self, mission_id: str) -> dict:
     return {"dispatched": mission_id}
 
 
+@celery_app.task(name="arcadia.dispatch.watchdog")
+def mission_watchdog() -> dict:
+    """Missions that never report progress (sim restarted, command lost) must not block a robot forever."""
+    stale_after = timedelta(seconds=240)
+    cutoff = _now() - stale_after
+    freed = []
+    with sync_session() as s:
+        rows = s.execute(select(Mission).where(Mission.status.in_(("dispatched", "running")),
+                                               Mission.dispatched_at.is_not(None), Mission.dispatched_at < cutoff)).scalars().all()
+        fleet = sync_get_fleet()
+        for m in rows:
+            st = fleet.get(m.robot_id or "", {})
+            # a robot that is still reporting this mission id is genuinely busy (long survey) - leave it
+            if st.get("mission_id") == m.id and time.time() - float(st.get("last_seen") or 0) < 30:
+                continue
+            m.status = "failed"
+            m.completed_at = _now()
+            m.result = {"reason": "watchdog timeout"}
+            if m.robot_id:
+                s.execute(update(Robot).where(Robot.id == m.robot_id, Robot.current_mission_id == m.id).values(current_mission_id=None))
+                freed.append(m.robot_id)
+        s.commit()
+    for rid in set(freed):
+        st = sync_get_fleet().get(rid, {})
+        if st.get("status") in ("active", "returning", "towing"):
+            sync_update_robot(rid, status="idle", current_mission_id=None, mission_id=None)
+    return {"timed_out": len(freed)}
+
+
 # ============================================================================ chaos
 @celery_app.task(name="arcadia.chaos.tick")
 def chaos_tick() -> dict:
@@ -113,7 +142,7 @@ def chaos_tick() -> dict:
     if not targets:
         return {"skipped": "no targets"}
     robot_id = rng.choice(targets)
-    cmd = chaos_svc.build_fault_command(robot_id, None, None, rng, allowed=list(cfg.kinds))
+    cmd = chaos_svc.build_fault_command(robot_id, None, None, rng, allowed=list(cfg.kinds), robot_type=fleet[robot_id].get("type"))
     sync_send_command(cmd)
     sync_publish_dashboard({"t": "chaos", "robot_id": robot_id, "fault": cmd.payload["fault"], "params": cmd.payload["params"]})
     return {"injected": cmd.payload, "robot": robot_id}

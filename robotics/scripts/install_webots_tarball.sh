@@ -24,6 +24,20 @@ rm -rf "${DEST}.tmp" && mkdir -p "${DEST}.tmp"
 tar -xjf "$TARBALL" -C "${DEST}.tmp" --strip-components=1
 rm -rf "$DEST" && mv "${DEST}.tmp" "$DEST"
 
+# Runtime libraries the tarball expects but Ubuntu 26.04 no longer ships (libxml2.so.2, Imath 2.5)
+# or that are not installed by default (GLU, sndio). Borrow them from the snap when present,
+# otherwise install what apt still provides.
+echo "==> Resolving runtime libraries"
+SNAPLIB=/snap/webots/current/usr/lib/x86_64-linux-gnu
+for lib in libGLU.so.1 libsndio.so.7 libxml2.so.2 libImath-2_5.so.25; do
+  if ldconfig -p | grep -q "$lib" || [[ -f "$DEST/lib/webots/$lib" ]]; then continue; fi
+  if [[ -f "$SNAPLIB/$lib" ]]; then
+    cp -L "$SNAPLIB/$lib" "$DEST/lib/webots/" && echo "   borrowed $lib from the webots snap"
+  else
+    echo "   MISSING $lib -> sudo apt install libglu1-mesa libsndio7.0   (libxml2.so.2 / libImath-2_5: install the webots snap once and re-run)"
+  fi
+done
+
 # shell hook (idempotent)
 HOOK="export WEBOTS_HOME=\"$DEST\"   # ARCADIA"
 grep -qF 'WEBOTS_HOME="'"$DEST" ~/.bashrc 2>/dev/null || echo "$HOOK" >> ~/.bashrc

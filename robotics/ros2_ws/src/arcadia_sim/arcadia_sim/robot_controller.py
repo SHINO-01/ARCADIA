@@ -31,7 +31,7 @@ from rclpy.node import Node  # noqa: E402
 from rclpy.qos import QoSProfile, ReliabilityPolicy  # noqa: E402
 from sensor_msgs.msg import Imu  # noqa: E402
 
-from arcadia_msgs.msg import Battery, Command, Event  # noqa: E402
+from arcadia_msgs.msg import Battery, Command, Event, State  # noqa: E402
 from arcadia_sim.behaviour import BatteryModel, Behaviour  # noqa: E402
 
 SPECS = {
@@ -73,8 +73,12 @@ class ArcadiaRobot(Node):
         # ---- devices
         self.gps = self.wb.getDevice("gps"); self.gps.enable(int(self.dt * 1000))
         self.imu = self.wb.getDevice("imu"); self.imu.enable(int(self.dt * 1000))
-        self.gyro = self.wb.getDevice("gyro"); self.gyro.enable(int(self.dt * 1000))
-        self.accel = self.wb.getDevice("accel"); self.accel.enable(int(self.dt * 1000))
+        # Gyro/accelerometer need a Physics node; the kinematic UAV has none, so they may be absent.
+        self.gyro = self.wb.getDevice("gyro")
+        self.accel = self.wb.getDevice("accel")
+        for dev in (self.gyro, self.accel):
+            if dev is not None:
+                dev.enable(int(self.dt * 1000))
         self.lidar = None
         self.motors = []
         if self.is_uav:
@@ -97,6 +101,7 @@ class ArcadiaRobot(Node):
         self.pub_odom = self.create_publisher(Odometry, f"{ns}/odom", sensor_qos)
         self.pub_imu = self.create_publisher(Imu, f"{ns}/imu", sensor_qos)
         self.pub_batt = self.create_publisher(Battery, f"{ns}/battery", 10)
+        self.pub_state = self.create_publisher(State, f"{ns}/state", 10)
         self.pub_diag = self.create_publisher(DiagnosticArray, "/diagnostics", 10)
         self.pub_event = self.create_publisher(Event, "/arcadia/event", 50)
         self.create_subscription(Command, "/arcadia/command", self.on_command, 50)
@@ -109,6 +114,7 @@ class ArcadiaRobot(Node):
         self.jammed_wheel: int | None = None
         self.tow_follow_target: str | None = None
         self.get_logger().info(f"{name} ({self.robot_type}) online, dt={self.dt*1000:.0f}ms, active={self.active}")
+        self._announced = False
 
     # ------------------------------------------------------------------ ROS callbacks
     def on_cmd_vel(self, msg: Twist) -> None:
@@ -267,10 +273,18 @@ class ArcadiaRobot(Node):
             rclpy.spin_once(self, timeout_sec=0.0)
             pos = self.position()
             yaw = self.yaw()
+            if not self._announced and self.b.sim_time > 0.5:  # let publishers match before announcing
+                self._announced = True
+                self.emit({"kind": "robot_online", "payload": {"type": self.robot_type, "active": self.active,
+                                                               "battery_pct": self.b.battery.pct, "x": pos[0], "y": pos[1]}})
             if not self.active:
                 if self.motors:
                     self.set_wheels(0.0, 0.0)
-                self.publish_diag(pos, 0.0)
+                if self.b.sim_time - last_batt >= 0.5:
+                    last_batt = self.b.sim_time
+                    self.publish_state(0.0)
+                    self.publish_diag(pos, 0.0)
+                self.b.sim_time += self.dt
                 continue
             target = self.b.tick(self.dt, pos, self.irradiance)
             speed = self.fly_uav(target, pos) if self.is_uav else self.drive_ugv(target, pos, yaw)
@@ -299,6 +313,7 @@ class ArcadiaRobot(Node):
             if now - last_batt >= 0.5:
                 last_batt = now
                 self.publish_battery(torque_w)
+                self.publish_state(speed)
                 self.publish_diag(pos, speed)
         self.destroy_node()
 
@@ -322,7 +337,7 @@ class ArcadiaRobot(Node):
         msg.pose.pose.position.x, msg.pose.pose.position.y, msg.pose.pose.position.z = pos
         msg.pose.pose.orientation = yaw_to_quat(yaw)
         msg.twist.twist.linear.x = speed
-        g = self.gyro.getValues()
+        g = self.gyro.getValues() if self.gyro is not None else (0.0, 0.0, 0.0)
         msg.twist.twist.angular.z = g[2]
         if self.b.latency_ms > 0:  # chaos: network latency -> delayed, lossy odometry
             self.odom_delay.append((time.time() + self.b.latency_ms / 1000.0, msg))
@@ -335,7 +350,7 @@ class ArcadiaRobot(Node):
         imu = Imu()
         imu.header = msg.header
         imu.orientation = msg.pose.pose.orientation
-        a = self.accel.getValues()
+        a = self.accel.getValues() if self.accel is not None else (0.0, 0.0, 9.81)
         imu.linear_acceleration.x, imu.linear_acceleration.y, imu.linear_acceleration.z = a
         imu.angular_velocity.x, imu.angular_velocity.y, imu.angular_velocity.z = g
         self.pub_imu.publish(imu)
@@ -351,6 +366,21 @@ class ArcadiaRobot(Node):
         msg.solar_in_w = self.spec["solar_skin_w"] * self.irradiance
         msg.charging = self.b.status == "charging"
         self.pub_batt.publish(msg)
+
+    def publish_state(self, speed: float) -> None:
+        b = self.b
+        m = State()
+        m.stamp = self.get_clock().now().to_msg()
+        m.robot_id = self.robot_id
+        m.type = self.robot_type
+        m.status = b.status if self.active else "offline"
+        m.active = self.active
+        m.mission_id = (b.mission or {}).get("mission_id", "") or ""
+        m.fault = b.fault.kind if b.fault else ""
+        m.latency_ms = b.latency_ms
+        m.motor_temp_c = b.motor_temp
+        m.cpu_load = 0.18 + 0.35 * (speed / self.spec["max_speed"]) + (0.3 if b.mission else 0.0)
+        self.pub_state.publish(m)
 
     def publish_diag(self, pos, speed) -> None:
         arr = DiagnosticArray()

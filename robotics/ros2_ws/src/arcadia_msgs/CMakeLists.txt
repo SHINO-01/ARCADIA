@@ -8,6 +8,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/Event.msg"
   "msg/Command.msg"
   "msg/Battery.msg"
+  "msg/State.msg"
   DEPENDENCIES builtin_interfaces
 )
 ament_export_dependencies(rosidl_default_runtime)

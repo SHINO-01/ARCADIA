@@ -66,6 +66,13 @@ def launch_setup(context, *args, **kwargs):
     webots_args.append(world)
     webots_env = {"WEBOTS_HOME": home, "QT_QPA_PLATFORM": os.environ.get("QT_QPA_PLATFORM", "xcb"),
                   "LD_LIBRARY_PATH": f"{home}/lib/webots:{home}/lib/controller:" + os.environ.get("LD_LIBRARY_PATH", "")}
+    # GNOME on Wayland: Xwayland needs the mutter auth cookie; shells spawned outside the session lack it.
+    if not os.environ.get("XAUTHORITY"):
+        import glob
+        cookies = glob.glob(f"/run/user/{os.getuid()}/.mutter-Xwaylandauth.*")
+        if cookies:
+            webots_env["XAUTHORITY"] = cookies[0]
+    webots_env.setdefault("DISPLAY", os.environ.get("DISPLAY", ":0"))
     webots = ExecuteProcess(cmd=webots_args, name="webots", output="screen", additional_env=webots_env)
 
     supervisor = ExecuteProcess(

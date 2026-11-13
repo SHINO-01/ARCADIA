@@ -4,9 +4,9 @@
 
 EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/objects/backgrounds/protos/TexturedBackground.proto"
 EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/objects/backgrounds/protos/TexturedBackgroundLight.proto"
-EXTERNPROTO "../protos/ArcadiaUGV.proto"
-EXTERNPROTO "../protos/ArcadiaAGV.proto"
-EXTERNPROTO "../protos/ArcadiaUAV.proto"
+IMPORTABLE EXTERNPROTO "../protos/ArcadiaUGV.proto"
+IMPORTABLE EXTERNPROTO "../protos/ArcadiaAGV.proto"
+IMPORTABLE EXTERNPROTO "../protos/ArcadiaUAV.proto"
 
 WorldInfo {
   title "ARCADIA farm"
@@ -24,8 +24,8 @@ Viewpoint {
   position 40 -90 60
   follow ""
 }
-TexturedBackground { texture "noon_cloudy_empty" }
-TexturedBackgroundLight { texture "noon_cloudy_empty" castShadows FALSE }
+TexturedBackground { texture "noon_cloudy_countryside" }
+TexturedBackgroundLight { texture "noon_cloudy_countryside" castShadows FALSE }
 DEF GROUND Solid {
   name "ground"
   children [

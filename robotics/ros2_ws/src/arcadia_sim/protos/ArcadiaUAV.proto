@@ -26,8 +26,7 @@ PROTO ArcadiaUAV [
       Pose { translation 0 0 0.051 children [ Shape { appearance PBRAppearance { baseColor 0.1 0.15 0.4 metalness 0.7 roughness 0.15 } geometry Box { size 0.28 0.28 0.004 } } ] }
       GPS { name "gps" }
       InertialUnit { name "imu" }
-      Gyro { name "gyro" }
-      Accelerometer { name "accel" }
+      # (no Gyro/Accelerometer: they require a Physics node; the UAV is kinematic by design)
       %<
         const arms = [[1, 0.28, 0.28], [2, -0.28, 0.28], [3, -0.28, -0.28], [4, 0.28, -0.28]];
         for (const [i, x, y] of arms) {

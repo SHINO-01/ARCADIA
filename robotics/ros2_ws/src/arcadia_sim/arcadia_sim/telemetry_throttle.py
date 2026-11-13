@@ -15,7 +15,7 @@ from nav_msgs.msg import Odometry
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 
-from arcadia_msgs.msg import Battery, Event, Telemetry
+from arcadia_msgs.msg import Battery, Event, State, Telemetry
 
 
 class TelemetryThrottle(Node):
@@ -34,6 +34,7 @@ class TelemetryThrottle(Node):
             ns = f"/arcadia/{r.replace('-', '_')}"  # ROS topic names cannot contain hyphens
             self.create_subscription(Odometry, f"{ns}/odom", lambda m, r=r: self.on_odom(r, m), qos)
             self.create_subscription(Battery, f"{ns}/battery", lambda m, r=r: self.on_batt(r, m), 10)
+            self.create_subscription(State, f"{ns}/state", lambda m, r=r: self.on_state(r, m), 10)
         self.create_subscription(Event, "/arcadia/event", self.on_event, 50)
         self.pub = self.create_publisher(Telemetry, "/arcadia/telemetry", 20)
         self.create_timer(1.0 / self.rate, self.flush)
@@ -55,9 +56,20 @@ class TelemetryThrottle(Node):
         d = self.latest.setdefault(r, {})
         d.update(battery_pct=m.pct, battery_v=m.voltage, power_w=m.power_w, charging=m.charging)
 
+    def on_state(self, r: str, m: State) -> None:
+        """Authoritative state from the controller (preferred over event inference)."""
+        self.in_count += 1
+        d = self.latest.setdefault(r, {})
+        d.update(status=m.status, mission=m.mission_id, latency_ms=m.latency_ms, motor_temp_c=m.motor_temp_c,
+                 cpu_load=m.cpu_load, state_t=time.time(), active=m.active)
+        if m.type:
+            self.types[r] = m.type
+        self.status[r] = m.status
+        self.mission[r] = m.mission_id
+
     def on_event(self, e: Event) -> None:
-        # Track status/mission transitions so the compact frame carries them
-        if not e.robot_id:
+        # Fallback: infer status/mission transitions from events when a controller publishes no State
+        if not e.robot_id or time.time() - self.latest.get(e.robot_id, {}).get("state_t", 0.0) < 5.0:
             return
         k = e.kind
         if k == "mission_started":
@@ -101,7 +113,8 @@ class TelemetryThrottle(Node):
             m.battery_pct = float(d.get("battery_pct", 100.0))
             m.battery_v = float(d.get("battery_v", 48.0))
             m.motor_temp_c = float(d.get("motor_temp_c", 35.0))
-            m.cpu_load = 0.2 + (0.3 if self.mission.get(r) else 0.0)
+            m.cpu_load = float(d.get("cpu_load", 0.2 + (0.3 if self.mission.get(r) else 0.0)))
+            m.latency_ms = float(d.get("latency_ms", 0.0))
             m.mission_id = self.mission.get(r, "")
             self.pub.publish(m)
             self.out_count += 1
