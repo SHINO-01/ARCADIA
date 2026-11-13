@@ -4,12 +4,15 @@ from __future__ import annotations
 import os
 import sys
 
+# Order matters: an explicit WEBOTS_HOME, then user-space/tarball installs, the snap last
+# (the snap cannot open an Xwayland display on Ubuntu 24.04+/26.04 - see install_webots_tarball.sh).
 CANDIDATES = [
     os.environ.get("WEBOTS_HOME"),
-    "/snap/webots/current/usr/share/webots",
+    os.path.expanduser("~/opt/webots"),
+    os.path.expanduser("~/webots"),
     "/usr/local/webots",
     "/opt/webots",
-    os.path.expanduser("~/webots"),
+    "/snap/webots/current/usr/share/webots",
 ]
 
 

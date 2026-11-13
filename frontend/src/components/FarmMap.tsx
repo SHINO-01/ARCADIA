@@ -147,6 +147,7 @@ export function FarmMap({ onDrawn, onFps }: FarmMapProps) {
     })
 
     mapRef.current = map
+    if (import.meta.env.DEV) (window as unknown as { __map?: MLMap }).__map = map
     return () => { altaraRef.current?.destroy(); map.remove(); mapRef.current = null }
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 

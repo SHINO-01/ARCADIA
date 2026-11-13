@@ -27,7 +27,7 @@ export function WebotsView() {
       } catch { if (alive) setReachable(false) }
     }
     probe()
-    const id = setInterval(probe, reachable ? 30000 : 8000)
+    const id = setInterval(probe, reachable ? 30000 : 20000)
     return () => { alive = false; clearInterval(id) }
   }, [nonce, reachable])
 

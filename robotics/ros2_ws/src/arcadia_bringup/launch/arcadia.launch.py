@@ -24,10 +24,15 @@ ROBOTS = ["uav-1", "ugv-1", "agv-1"]
 
 
 def _webots_home() -> str:
-    for c in (os.environ.get("WEBOTS_HOME"), "/snap/webots/current/usr/share/webots", "/usr/local/webots", "/opt/webots"):
+    candidates = (os.environ.get("WEBOTS_HOME"), os.path.expanduser("~/opt/webots"), os.path.expanduser("~/webots"),
+                  "/usr/local/webots", "/opt/webots", "/snap/webots/current/usr/share/webots")
+    for c in candidates:
         if c and os.path.isdir(os.path.join(c, "lib", "controller")):
+            if c.startswith("/snap/") and os.environ.get("XDG_SESSION_TYPE") == "wayland":
+                print("[arcadia] WARNING: the Webots snap cannot open an Xwayland display; if Webots dies with "
+                      "'cannot open display', run robotics/scripts/install_webots_tarball.sh", flush=True)
             return c
-    raise RuntimeError("Webots not found; set WEBOTS_HOME")
+    raise RuntimeError("Webots not found; run robotics/scripts/install_webots_tarball.sh or set WEBOTS_HOME")
 
 
 def _webots_bin(home: str) -> str:
@@ -55,13 +60,13 @@ def launch_setup(context, *args, **kwargs):
     api_url = LaunchConfiguration("api_url").perform(context)
     mode = LaunchConfiguration("mode").perform(context)
 
-    webots_args = [_webots_bin(home), f"--mode={mode}", "--batch", "--stdout", "--stderr", f"--stream=port={stream_port};mode=w3d",
-                   f"--port=1234"]
+    webots_args = [_webots_bin(home), f"--mode={mode}", "--batch", "--stdout", "--stderr", "--stream", f"--port={stream_port}"]
     if not gui:
         webots_args += ["--minimize", "--no-rendering"]
     webots_args.append(world)
-    webots = ExecuteProcess(cmd=webots_args, name="webots", output="screen",
-                            additional_env={"WEBOTS_HOME": home, "QT_QPA_PLATFORM": os.environ.get("QT_QPA_PLATFORM", "xcb")})
+    webots_env = {"WEBOTS_HOME": home, "QT_QPA_PLATFORM": os.environ.get("QT_QPA_PLATFORM", "xcb"),
+                  "LD_LIBRARY_PATH": f"{home}/lib/webots:{home}/lib/controller:" + os.environ.get("LD_LIBRARY_PATH", "")}
+    webots = ExecuteProcess(cmd=webots_args, name="webots", output="screen", additional_env=webots_env)
 
     supervisor = ExecuteProcess(
         cmd=[os.path.join(get_package_share_directory("arcadia_supervisor"), "..", "..", "lib", "arcadia_supervisor", "supervisor")],

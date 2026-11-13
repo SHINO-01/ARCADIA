@@ -91,7 +91,6 @@ async def system_status(s: AsyncSession = Depends(get_session)):
             "active_farm": await fleet.get_active_farm_id()}
 
 
-@router.websocket("/ws/telemetry")
 async def ws_telemetry(ws: WebSocket):
     """Live stream: telemetry frames + dashboard events, multiplexed on one socket."""
     await ws.accept()

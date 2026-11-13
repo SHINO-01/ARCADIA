@@ -94,8 +94,39 @@ class BridgeManager:
         self.mode = "headless"
         if self.world:
             self.twin.load_world(self.world)
+            await self._reconcile_after_twin_reset()
         self.twin.start()
         log.info("Bridge running in HEADLESS twin mode")
+
+    async def _reconcile_after_twin_reset(self) -> None:
+        """The in-memory twin restarts from the world spawn state; bring the durable copies in line:
+        reset fleet cache/rows, fail in-flight missions and close incidents that no longer exist."""
+        from datetime import datetime, timezone
+
+        from sqlalchemy import update
+
+        from app.models import Incident, Mission, Robot
+
+        robots = []
+        for r in self.world.get("robots", []):  # type: ignore[union-attr]
+            lat, lng = self.origin.to_latlng(r["x"], r["y"]) if self.origin else (None, None)
+            robots.append({"id": r["id"], "type": r["type"], "name": r["name"], "status": "idle" if r["active"] else "offline",
+                           "active": r["active"], "battery_pct": 100.0, "x": r["x"], "y": r["y"], "z": r["z"], "lat": lat, "lng": lng,
+                           "heading": 0.0, "speed": 0.0, "home": r["home"], "spec": r["spec"], "fault": None,
+                           "current_mission_id": None, "mission_id": None, "manual_override": False})
+        await fleet.set_fleet(robots)
+        now = datetime.now(timezone.utc)
+        async with session_scope() as s:
+            for r in robots:
+                await s.execute(update(Robot).where(Robot.id == r["id"]).values(
+                    status=r["status"], active=r["active"], battery_pct=100.0, x=r["x"], y=r["y"], z=r["z"], fault=None,
+                    current_mission_id=None))
+            await s.execute(update(Mission).where(Mission.status.in_(("queued", "dispatched", "running")))
+                            .values(status="failed", completed_at=now, result={"reason": "simulation restarted"}))
+            await s.execute(update(Incident).where(Incident.state.in_(("open", "acknowledged", "recovering")))
+                            .values(state="resolved", resolved_at=now))
+        await fleet.publish_dashboard({"t": "incident_resolved", "robot_id": None})
+        log.info("Reconciled fleet/missions/incidents after twin reset")
 
     async def _ros_connected(self) -> None:
         prev = self.mode

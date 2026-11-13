@@ -93,7 +93,7 @@ class ArcadiaRobot(Node):
 
         # ---- ROS interfaces
         sensor_qos = QoSProfile(depth=5, reliability=ReliabilityPolicy.BEST_EFFORT)
-        ns = f"/arcadia/{name}"
+        ns = f"/arcadia/{name.replace('-', '_')}"  # ROS topic names cannot contain hyphens
         self.pub_odom = self.create_publisher(Odometry, f"{ns}/odom", sensor_qos)
         self.pub_imu = self.create_publisher(Imu, f"{ns}/imu", sensor_qos)
         self.pub_batt = self.create_publisher(Battery, f"{ns}/battery", 10)

@@ -34,6 +34,10 @@ for r in (farms.router, world.router, fleet.router, missions.router, incidents.r
     app.include_router(r, prefix="/api")
 
 
+# Live telemetry socket lives at the root (Caddy routes /ws/* here), not under the /api prefix.
+app.add_api_websocket_route("/ws/telemetry", telemetry.ws_telemetry)
+
+
 @app.get("/api/health")
 async def health():
     return {"ok": True, "bridge": bridge.mode}

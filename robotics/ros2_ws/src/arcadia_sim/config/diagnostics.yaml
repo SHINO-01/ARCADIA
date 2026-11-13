@@ -1,4 +1,4 @@
-# diagnostic_aggregator analyzers: every robot gets its own OK/WARN/ERROR rollup under /arcadia/<robot>
+# diagnostic_aggregator analyzers: one OK/WARN/ERROR rollup per robot under /arcadia/<robot>
 diagnostic_aggregator:
   ros__parameters:
     path: arcadia
@@ -7,21 +7,12 @@ diagnostic_aggregator:
       uav_1:
         type: diagnostic_aggregator/GenericAnalyzer
         path: uav-1
-        startswith: ['arcadia/uav-1']
-        remove_prefix: 'arcadia/uav-1'
-        timeout: 5.0
-        num_items: 5
+        startswith: [ 'arcadia/uav-1' ]
       ugv_1:
         type: diagnostic_aggregator/GenericAnalyzer
         path: ugv-1
-        startswith: ['arcadia/ugv-1']
-        remove_prefix: 'arcadia/ugv-1'
-        timeout: 5.0
-        num_items: 5
+        startswith: [ 'arcadia/ugv-1' ]
       agv_1:
         type: diagnostic_aggregator/GenericAnalyzer
         path: agv-1
-        startswith: ['arcadia/agv-1']
-        remove_prefix: 'arcadia/agv-1'
-        timeout: 5.0
-        num_items: 5
+        startswith: [ 'arcadia/agv-1' ]

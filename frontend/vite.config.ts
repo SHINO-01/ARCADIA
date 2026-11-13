@@ -4,6 +4,8 @@ import tailwindcss from '@tailwindcss/vite'
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],
+  // maplibre-gl ships its own worker; pre-bundling it breaks the worker URL in dev
+  optimizeDeps: { exclude: ['maplibre-gl'] },
   server: {
     port: 5173,
     proxy: {

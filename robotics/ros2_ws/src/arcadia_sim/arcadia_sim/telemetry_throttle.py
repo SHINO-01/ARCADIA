@@ -31,8 +31,9 @@ class TelemetryThrottle(Node):
         self.types: dict[str, str] = {r: "scout_uav" if r.startswith("uav") else "logistics_agv" if r.startswith("agv") else "seeder_ugv" for r in robots}
         qos = QoSProfile(depth=5, reliability=ReliabilityPolicy.BEST_EFFORT)
         for r in robots:
-            self.create_subscription(Odometry, f"/arcadia/{r}/odom", lambda m, r=r: self.on_odom(r, m), qos)
-            self.create_subscription(Battery, f"/arcadia/{r}/battery", lambda m, r=r: self.on_batt(r, m), 10)
+            ns = f"/arcadia/{r.replace('-', '_')}"  # ROS topic names cannot contain hyphens
+            self.create_subscription(Odometry, f"{ns}/odom", lambda m, r=r: self.on_odom(r, m), qos)
+            self.create_subscription(Battery, f"{ns}/battery", lambda m, r=r: self.on_batt(r, m), 10)
         self.create_subscription(Event, "/arcadia/event", self.on_event, 50)
         self.pub = self.create_publisher(Telemetry, "/arcadia/telemetry", 20)
         self.create_timer(1.0 / self.rate, self.flush)
