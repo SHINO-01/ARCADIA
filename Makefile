@@ -4,6 +4,7 @@ ROS_DISTRO ?= lyrical
 WS := robotics/ros2_ws
 API_URL ?= http://localhost:8080/api
 export WEBOTS_HOME ?= $(HOME)/opt/webots
+export CYCLONEDDS_URI ?= file://$(CURDIR)/robotics/config/cyclonedds.xml
 
 .PHONY: help up down logs ps web-build backend-dev backend-test frontend-dev frontend-build \
         robotics-build sim sim-headless seed-demo clean

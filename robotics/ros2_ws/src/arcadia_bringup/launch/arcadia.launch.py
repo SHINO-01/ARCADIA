@@ -25,6 +25,11 @@ ROBOTS = ["uav-1", "ugv-1", "agv-1"]
 # Everything runs on this laptop: keep DDS discovery on loopback so Wi-Fi changes/sleep never
 # break the graph (multicast writes to a vanished interface spam CycloneDDS errors otherwise).
 os.environ.setdefault("ROS_AUTOMATIC_DISCOVERY_RANGE", "LOCALHOST")
+_CYCLONE_CFG = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "..", "..", "robotics", "config", "cyclonedds.xml"))
+for _cand in (_CYCLONE_CFG, os.path.expanduser("~/WORK/Projects/ARCADIA/robotics/config/cyclonedds.xml")):
+    if os.path.isfile(_cand):
+        os.environ.setdefault("CYCLONEDDS_URI", f"file://{_cand}")
+        break
 
 
 def _webots_home() -> str:
