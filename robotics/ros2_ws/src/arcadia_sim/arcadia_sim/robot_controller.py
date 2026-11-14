@@ -200,8 +200,11 @@ class ArcadiaRobot(Node):
         dist = math.hypot(dx, dy)
         # A tow approaches another robot: the winch attaches from ~2 m, and the target itself must
         # not be treated as an obstacle during the final approach.
-        approaching_robot = self.b.mission is not None and self.b.mission.get("kind") == "tow" and self.b.tow_phase == 0
-        reach = 2.0 if approaching_robot else 0.45
+        m = self.b.mission or {}
+        approaching_robot = m.get("kind") == "tow" and self.b.tow_phase == 0
+        last_wp = self.b.wp_i == len(m.get("waypoints") or []) - 1
+        parking = m.get("kind") in ("charge", "tow") and last_wp          # dock pads are 6 x 6 m
+        reach = 3.0 if approaching_robot else 2.5 if parking else 0.8     # winch cable / pad / waypoint tolerance
         if dist < reach:
             self.set_wheels(0.0, 0.0)
             self.b.reached(target)
@@ -225,10 +228,12 @@ class ArcadiaRobot(Node):
                     ang = -fov / 2 + fov * best_i / max(1, n - 1)
                     avoid = (1.6 - best) / 1.6 * (1.0 if ang < 0 else -1.0) * 1.8
         vmax = self.spec["max_speed"]
-        v = vmax * max(0.25, 1.0 - abs(err) / math.pi * 1.5) * min(1.0, dist / 2.0 + 0.3)
-        w = 2.2 * err + avoid
-        if abs(err) > math.radians(70):
-            v = 0.1
+        if abs(err) > 0.5:
+            # Large heading error: pivot in place (skid-steer cannot out-turn forward motion on a heavy chassis)
+            v, w = 0.0, math.copysign(1.6, err)
+        else:
+            v = vmax * (1.0 - abs(err) / 0.5 * 0.6) * min(1.0, dist / 2.0 + 0.3)
+            w = 2.0 * err + avoid
         if self.manual_twist and self.b.sim_time < self.manual_until:
             v, w = self.manual_twist.linear.x, self.manual_twist.angular.z
         self.set_wheels(v, w)

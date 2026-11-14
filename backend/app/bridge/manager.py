@@ -58,6 +58,7 @@ class BridgeManager:
         self._buffer: list[dict] = []
         self._last_fleet_push: dict[str, float] = {}
         self.stats = {"telemetry": 0, "events": 0, "commands": 0, "persisted": 0, "last_telemetry": 0.0}
+        self.towed: set[str] = set()
         self.ros.on_connect = self._ros_connected
         self.ros.on_disconnect = self._ros_disconnected
 
@@ -295,9 +296,14 @@ class BridgeManager:
         now = time.time()
         if now - self._last_fleet_push.get(frame.robot_id, 0.0) > 0.5:
             self._last_fleet_push[frame.robot_id] = now
+            status = frame.status
+            # A towed robot does not know it is being towed: keep the backend's "towed" status until
+            # the tow completes (tow_complete -> clear_fault resets it).
+            if status in ("stranded", "fault") and frame.robot_id in self.towed:
+                status = "towed"
             await fleet.update_robot(frame.robot_id, broadcast=False, x=frame.x, y=frame.y, z=frame.z, lat=frame.lat,
                                      lng=frame.lng, heading=frame.heading, speed=frame.speed, battery_pct=frame.battery_pct,
-                                     status=frame.status, type=frame.type, h3=frame.h3, latency_ms=frame.latency_ms,
+                                     status=status, type=frame.type, h3=frame.h3, latency_ms=frame.latency_ms,
                                      mission_id=frame.mission_id, last_seen=now)
         self._buffer.append(data)
         if len(self._buffer) >= settings.telemetry_persist_batch:
@@ -305,6 +311,10 @@ class BridgeManager:
 
     async def _on_event(self, evt: SimEvent) -> None:
         self.stats["events"] += 1
+        if evt.kind == "tow_attached" and evt.payload.get("target"):
+            self.towed.add(evt.payload["target"])
+        elif evt.kind in ("tow_complete", "fault_cleared", "robot_online"):
+            self.towed.discard(evt.payload.get("target") or evt.robot_id or "")
         await events.handle_event(evt, self.farm_id)
 
     async def _persist_loop(self) -> None:

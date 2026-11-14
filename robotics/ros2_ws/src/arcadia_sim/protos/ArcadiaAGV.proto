@@ -33,7 +33,7 @@ PROTO ArcadiaAGV [
       >%
       HingeJoint {
         jointParameters HingeJointParameters { axis 0 1 0 anchor %<= x >% %<= y >% -0.1 }
-        device [ RotationalMotor { name "%<= n >%" maxVelocity 16 maxTorque 120 } PositionSensor { name "%<= n >%_sensor" } ]
+        device [ RotationalMotor { name "%<= n >%" maxVelocity 16 maxTorque 420 } PositionSensor { name "%<= n >%_sensor" } ]
         endPoint Solid {
           translation %<= x >% %<= y >% -0.1
           rotation 1 0 0 1.5708
