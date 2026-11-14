@@ -1,5 +1,5 @@
 /**
- * Mission map: geo-selection (Mapbox GL Draw on MapLibre), H3 planning layers (crop beds, travel
+ * Mission map: geo-selection (built-in boundary tool), H3 planning layers (crop beds, travel
  * roads, docks, storage, repair station, waterlogged hazards), live swarm via the Altara canvas,
  * and RTS-style unit control:
  *   click unit = select · ctrl/shift+click = add to selection · right-click = move selection
@@ -8,25 +8,14 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react'
 import * as maplibregl from 'maplibre-gl'
 import maplibreWorkerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?url'
-import type { Map as MLMap, MapMouseEvent, MapGeoJSONFeature, GeoJSONSource, StyleSpecification, IControl, RequestTransformFunction } from 'maplibre-gl'
-import MapboxDraw from '@mapbox/mapbox-gl-draw'
+import type { Map as MLMap, MapMouseEvent, MapGeoJSONFeature, GeoJSONSource, StyleSpecification, RequestTransformFunction } from 'maplibre-gl'
 import 'maplibre-gl/dist/maplibre-gl.css'
-import '@mapbox/mapbox-gl-draw/dist/mapbox-gl-draw.css'
 import * as turf from '@turf/turf'
 import { AltaraRenderer } from '../altara/renderer'
 import { api } from '../lib/api'
 import { useLive, cellOverrides } from '../store/live'
 import { useUI } from '../store/ui'
 import { CROP_COLORS, INFRA_COLOR, type Infrastructure } from '../lib/types'
-
-// mapbox-gl-draw targets Mapbox GL class names; MapLibre renamed them. Without this the draw
-// tool's event handlers never bind to the canvas (polygon tool "does nothing").
-const DrawCtor = MapboxDraw as unknown as { constants: { classes: Record<string, string> } }
-DrawCtor.constants.classes.CANVAS = 'maplibregl-canvas'
-DrawCtor.constants.classes.CONTROL_BASE = 'maplibregl-ctrl'
-DrawCtor.constants.classes.CONTROL_PREFIX = 'maplibregl-ctrl-'
-DrawCtor.constants.classes.CONTROL_GROUP = 'maplibregl-ctrl-group'
-DrawCtor.constants.classes.ATTRIBUTION = 'maplibregl-ctrl-attrib'
 
 // The bundler does not emit MapLibre's worker on its own; hand it an explicit asset URL.
 maplibregl.setWorkerUrl(maplibreWorkerUrl)
@@ -49,7 +38,8 @@ export interface FarmMapProps { visible: boolean; onDrawn: (feature: GeoJSON.Fea
 export const FarmMap = forwardRef<FarmMapHandle, FarmMapProps>(function FarmMap({ visible, onDrawn, onFps }, ref) {
   const el = useRef<HTMLDivElement>(null)
   const mapRef = useRef<MLMap | null>(null)
-  const drawRef = useRef<MapboxDraw | null>(null)
+  const boundary = useRef<{ active: boolean; pts: [number, number][]; done: boolean }>({ active: false, pts: [], done: false })
+  const [drawState, setDrawState] = useState<{ active: boolean; n: number; areaM2: number }>({ active: false, n: 0, areaM2: 0 })
   const altaraRef = useRef<AltaraRenderer | null>(null)
   const popupRef = useRef<maplibregl.Popup | null>(null)
   const [ready, setReady] = useState(false)
@@ -58,9 +48,31 @@ export const FarmMap = forwardRef<FarmMapHandle, FarmMapProps>(function FarmMap(
   const chaosFlash = useLive((s) => s.chaosFlash)
   const fleet = useLive((s) => s.fleet)
 
+  const renderBoundary = () => {
+    const map = mapRef.current
+    if (!map) return
+    const b = boundary.current
+    const feats: GeoJSON.Feature[] = b.pts.map((p, i) => ({ type: 'Feature', geometry: { type: 'Point', coordinates: p }, properties: { first: i === 0 } }))
+    if (b.pts.length >= 2) feats.push({ type: 'Feature', geometry: { type: 'LineString', coordinates: b.done ? [...b.pts, b.pts[0]] : b.pts }, properties: {} })
+    if (b.pts.length >= 3) feats.push({ type: 'Feature', geometry: { type: 'Polygon', coordinates: [[...b.pts, b.pts[0]]] }, properties: { done: b.done } })
+    ;(map.getSource('boundary') as GeoJSONSource | undefined)?.setData({ type: 'FeatureCollection', features: feats })
+    const area = b.pts.length >= 3 ? turf.area(turf.polygon([[...b.pts, b.pts[0]]])) : 0
+    setDrawState({ active: b.active, n: b.pts.length, areaM2: area })
+    map.getCanvas().style.cursor = b.active ? 'crosshair' : ''
+  }
+  const finishBoundary = () => {
+    const b = boundary.current
+    if (b.pts.length < 3) return
+    b.done = true; b.active = false
+    renderBoundary()
+    const feature: GeoJSON.Feature<GeoJSON.Polygon> = { type: 'Feature', properties: {}, geometry: { type: 'Polygon', coordinates: [[...b.pts, b.pts[0]]] } }
+    onDrawn(feature, turf.area(feature))
+  }
+  const resetBoundary = () => { boundary.current = { active: false, pts: [], done: false }; renderBoundary() }
+
   useImperativeHandle(ref, () => ({
-    startDraw: () => { const d = drawRef.current; if (!d) return; d.deleteAll(); d.changeMode('draw_polygon') },
-    clearDraw: () => drawRef.current?.deleteAll(),
+    startDraw: () => { boundary.current = { active: true, pts: [], done: false }; renderBoundary() },
+    clearDraw: () => resetBoundary(),
     fitFarm: () => { const m = mapRef.current; if (m && farm) { const b = turf.bbox(farm.boundary as GeoJSON.Feature); m.fitBounds([[b[0], b[1]], [b[2], b[3]]], { padding: 60, duration: 700, maxZoom: 17.5 }) } },
   }), [farm])
 
@@ -73,20 +85,6 @@ export const FarmMap = forwardRef<FarmMapHandle, FarmMapProps>(function FarmMap(
     map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), 'top-right')
     map.addControl(new maplibregl.ScaleControl({ unit: 'metric' }), 'bottom-right')
     map.addControl(new maplibregl.AttributionControl({ compact: true }), 'bottom-right')
-    const draw = new MapboxDraw({ displayControlsDefault: false, controls: {}, defaultMode: 'simple_select', styles: drawStyles })
-    map.addControl(draw as unknown as IControl, 'top-left')
-    drawRef.current = draw
-    const handleDraw = () => {
-      const all = draw.getAll()
-      const poly = all.features.find((f: GeoJSON.Feature) => f.geometry.type === 'Polygon') as GeoJSON.Feature<GeoJSON.Polygon> | undefined
-      if (!poly) return
-      for (const f of all.features) if (f.id !== poly.id) draw.delete(String(f.id))
-      onDrawn(poly, turf.area(poly))
-    }
-    const anyMap = map as unknown as { on(type: string, fn: () => void): void }
-    anyMap.on('draw.create', handleDraw)
-    anyMap.on('draw.update', handleDraw)
-
     map.on('load', () => {
       map.addSource('hex', { type: 'geojson', data: { type: 'FeatureCollection', features: [] }, promoteId: 'h3' })
       map.addLayer({ id: 'hex-fill', type: 'fill', source: 'hex', paint: { 'fill-color': ['coalesce', ['feature-state', 'color'], '#6b5a3e'], 'fill-opacity': ['case', ['boolean', ['feature-state', 'hover'], false], 0.9, ['==', ['get', 'kind'], 'road'], 0.85, 0.55] } })
@@ -102,6 +100,10 @@ export const FarmMap = forwardRef<FarmMapHandle, FarmMapProps>(function FarmMap(
       map.addLayer({ id: 'infra-label', type: 'symbol', source: 'infra', layout: { 'text-field': ['get', 'label'], 'text-size': 11, 'text-offset': [0, 2.2], 'text-font': ['Open Sans Semibold', 'Noto Sans Regular'] }, paint: { 'text-color': '#e6f0e9', 'text-halo-color': '#0b1410', 'text-halo-width': 1.4 } })
       map.addSource('paths', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } })
       map.addLayer({ id: 'paths', type: 'line', source: 'paths', paint: { 'line-color': ['get', 'color'], 'line-width': 1.6, 'line-dasharray': [2, 2], 'line-opacity': 0.85 } })
+      map.addSource('boundary', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } })
+      map.addLayer({ id: 'boundary-fill', type: 'fill', source: 'boundary', filter: ['==', ['geometry-type'], 'Polygon'], paint: { 'fill-color': '#7ce38b', 'fill-opacity': ['case', ['boolean', ['get', 'done'], false], 0.14, 0.08] } })
+      map.addLayer({ id: 'boundary-line', type: 'line', source: 'boundary', filter: ['==', ['geometry-type'], 'LineString'], paint: { 'line-color': '#7ce38b', 'line-width': 2.5 } })
+      map.addLayer({ id: 'boundary-vertex', type: 'circle', source: 'boundary', filter: ['==', ['geometry-type'], 'Point'], paint: { 'circle-radius': ['case', ['boolean', ['get', 'first'], false], 7, 5], 'circle-color': ['case', ['boolean', ['get', 'first'], false], '#f5c451', '#7ce38b'], 'circle-stroke-color': '#0b1410', 'circle-stroke-width': 2 } })
       map.addSource('route', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } })
       map.addLayer({ id: 'route-line', type: 'line', source: 'route', filter: ['==', ['geometry-type'], 'LineString'], paint: { 'line-color': '#7ce38b', 'line-width': 2.2, 'line-dasharray': [1, 1.5] } })
       map.addLayer({ id: 'route-pt', type: 'circle', source: 'route', filter: ['==', ['geometry-type'], 'Point'], paint: { 'circle-radius': 9, 'circle-color': '#0b1410', 'circle-stroke-color': '#7ce38b', 'circle-stroke-width': 2 } })
@@ -126,9 +128,20 @@ export const FarmMap = forwardRef<FarmMapHandle, FarmMapProps>(function FarmMap(
     map.on('mouseleave', 'hex-fill', () => { if (hovered) map.setFeatureState({ source: 'hex', id: hovered }, { hover: false }); hovered = null; setHoverHex(null) })
 
     // ---- left click: select units / dispatch when armed / inspect hex
+    map.doubleClickZoom.disable()
+    map.on('dblclick', (e: MapMouseEvent) => { if (boundary.current.active) { e.preventDefault(); finishBoundary() } })
     map.on('click', async (e: MapMouseEvent) => {
       const ui = useUI.getState()
-      if (ui.mode === 'draw' && drawRef.current && drawRef.current.getMode() === 'draw_polygon') return
+      const b = boundary.current
+      if (b.active) {
+        if (b.pts.length >= 3) {
+          const first = map.project(b.pts[0])
+          if (Math.hypot(first.x - e.point.x, first.y - e.point.y) < 12) { finishBoundary(); return }
+        }
+        b.pts.push([e.lngLat.lng, e.lngLat.lat])
+        renderBoundary()
+        return
+      }
       const hit = altaraRef.current?.hit(e.point.x, e.point.y)
       const multi = e.originalEvent.ctrlKey || e.originalEvent.metaKey || e.originalEvent.shiftKey
       if (hit && !ui.dispatchArm) { if (multi) ui.toggleSelect(hit); else ui.selectRobot(hit === ui.selectedRobot && ui.selected.length === 1 ? null : hit); return }
@@ -173,13 +186,24 @@ export const FarmMap = forwardRef<FarmMapHandle, FarmMapProps>(function FarmMap(
     // The map container is re-positioned over whichever view hosts it; track its own size.
     const ro = new ResizeObserver(() => map.resize())
     ro.observe(el.current)
-    if (import.meta.env.DEV) (window as unknown as { __map?: MLMap }).__map = map
+    // debug handles (harmless in production; used by the browser-based smoke tests)
+    ;(window as unknown as { __map?: MLMap }).__map = map
     return () => { ro.disconnect(); altaraRef.current?.destroy(); map.remove(); mapRef.current = null }
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   // resize when the view that hosts the map becomes visible again
   useEffect(() => { if (visible && mapRef.current) setTimeout(() => mapRef.current?.resize(), 30) }, [visible])
-  useEffect(() => { const d = drawRef.current; if (d && ready && mode !== 'draw') { try { d.changeMode('simple_select') } catch { /* noop */ } } }, [mode, ready])
+  useEffect(() => { if (ready && mode !== 'draw' && boundary.current.active) resetBoundary() }, [mode, ready]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!boundary.current.active) return
+      if (e.key === 'Backspace') { boundary.current.pts.pop(); renderBoundary() }
+      if (e.key === 'Enter') finishBoundary()
+      if (e.key === 'Escape') resetBoundary()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   // ---------------------------------------------------------------- farm data
   useEffect(() => {
@@ -197,7 +221,7 @@ export const FarmMap = forwardRef<FarmMapHandle, FarmMapProps>(function FarmMap(
         properties: { kind: i.kind, slug: i.slug, color: INFRA_COLOR[i.kind] ?? '#fff', label: `${{ solar_dock: '☀', wind_dock: '≋', storage: '⌂', repair_station: '⚒' }[i.kind] ?? '•'} ${i.slug}` } })) })
       ;(map.getSource('beds') as GeoJSONSource).setData(bedFeatures(grid, farm.plan?.beds ?? []))
       paintCells(map, grid, layer)
-      drawRef.current?.deleteAll()
+      resetBoundary()
       const bbox = turf.bbox(farm.boundary as GeoJSON.Feature)
       map.fitBounds([[bbox[0], bbox[1]], [bbox[2], bbox[3]]], { padding: 60, duration: 900, maxZoom: 17.5 })
       ;(map as unknown as { __grid: GeoJSON.FeatureCollection }).__grid = grid
@@ -243,7 +267,8 @@ export const FarmMap = forwardRef<FarmMapHandle, FarmMapProps>(function FarmMap(
     <div className="relative h-full w-full">
       <div ref={el} className="h-full w-full" />
       {dispatchArm && <div className="pointer-events-none absolute left-1/2 top-3 -translate-x-1/2 rounded-md border border-leaf-2 bg-bg/90 px-3 py-1.5 text-xs text-leaf anim-slide-up">Click a target for <b>{dispatchArm.robotId}</b> · {dispatchArm.kind} <span className="kbd ml-2">Esc</span></div>}
-      {mode === 'draw' && !farm && <div className="pointer-events-none absolute left-1/2 top-3 -translate-x-1/2 rounded-md border border-line-2 bg-bg/90 px-3 py-1.5 text-xs text-fg-2 anim-slide-up">Click to place boundary vertices · double-click or click the first point to close</div>}
+      {drawState.active && <div className="pointer-events-none absolute left-1/2 top-3 -translate-x-1/2 rounded-md border border-leaf-2 bg-bg/90 px-3 py-1.5 text-xs text-fg anim-slide-up">
+        <b className="text-leaf">Drawing boundary</b> · {drawState.n} vertices{drawState.areaM2 > 0 ? ` · ${(drawState.areaM2 / 10000).toFixed(2)} ha` : ''} · click the first point / double-click / <span className="kbd">Enter</span> to close · <span className="kbd">⌫</span> undo · <span className="kbd">Esc</span> cancel</div>}
       {hoverHex && !dispatchArm && <div className="pointer-events-none absolute bottom-8 left-3 mono rounded bg-bg/80 px-2 py-1 text-[10px] text-fg-2">{hoverHex}</div>}
     </div>
   )
@@ -286,11 +311,3 @@ function paintCells(map: MLMap, grid: GeoJSON.FeatureCollection, layer: string) 
 }
 function ramp(v: number, stops: string[]) { const t = Math.max(0, Math.min(1, v)) * (stops.length - 1); const i = Math.min(stops.length - 2, Math.floor(t)); const k = t - i; const a = hex(stops[i]), b = hex(stops[i + 1]); return `rgb(${Math.round(a[0] + (b[0] - a[0]) * k)},${Math.round(a[1] + (b[1] - a[1]) * k)},${Math.round(a[2] + (b[2] - a[2]) * k)})` }
 function hex(h: string) { return [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)] }
-const drawStyles = [
-  { id: 'gl-draw-polygon-fill', type: 'fill', filter: ['all', ['==', '$type', 'Polygon']], paint: { 'fill-color': '#7ce38b', 'fill-opacity': 0.12 } },
-  { id: 'gl-draw-polygon-stroke', type: 'line', filter: ['all', ['==', '$type', 'Polygon']], paint: { 'line-color': '#7ce38b', 'line-width': 2.5 } },
-  { id: 'gl-draw-line', type: 'line', filter: ['all', ['==', '$type', 'LineString']], paint: { 'line-color': '#7ce38b', 'line-dasharray': [0.4, 2], 'line-width': 2 } },
-  { id: 'gl-draw-vertex-halo', type: 'circle', filter: ['all', ['==', 'meta', 'vertex'], ['==', '$type', 'Point']], paint: { 'circle-radius': 7, 'circle-color': '#0b1410' } },
-  { id: 'gl-draw-vertex', type: 'circle', filter: ['all', ['==', 'meta', 'vertex'], ['==', '$type', 'Point']], paint: { 'circle-radius': 4.5, 'circle-color': '#7ce38b' } },
-  { id: 'gl-draw-midpoint', type: 'circle', filter: ['all', ['==', 'meta', 'midpoint']], paint: { 'circle-radius': 3, 'circle-color': '#f5c451' } },
-]

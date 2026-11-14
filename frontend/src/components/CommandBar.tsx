@@ -25,11 +25,11 @@ export function CommandBar() {
     clearRoute()
   }
   return (
-    <div className="pointer-events-auto absolute bottom-3 left-1/2 flex -translate-x-1/2 items-stretch gap-2 rounded-xl border border-line-2 bg-panel/95 p-2 shadow-2xl backdrop-blur anim-slide-up">
+    <div className="pointer-events-auto absolute bottom-3 left-3 right-3 z-10 flex items-stretch justify-center gap-2 overflow-x-auto rounded-xl border border-line-2 bg-panel/95 p-2 shadow-2xl backdrop-blur">
       {/* selected units */}
       <div className="flex items-center gap-1.5 border-r border-line pr-2">
         {units.map((u) => { const live = liveRegistry.get(u.id); const b = live?.battery ?? u.battery_pct; return (
-          <div key={u.id} className={clsx('w-[132px] rounded-md border px-2 py-1.5', u.id === selectedRobot ? 'border-leaf-2 bg-leaf-2/10' : 'border-line bg-panel-2/60')}>
+          <div key={u.id} className={clsx('w-[118px] shrink-0 rounded-md border px-2 py-1.5', u.id === selectedRobot ? 'border-leaf-2 bg-leaf-2/10' : 'border-line bg-panel-2/60')}>
             <div className="flex items-center justify-between text-[11px]"><span className="flex items-center gap-1.5 font-semibold"><span className="h-2 w-2 rounded-sm" style={{ background: ROBOT_COLOR[u.type] }} />{u.id}</span><span className="text-[9px] uppercase text-fg-3">{u.status}</span></div>
             <div className="text-[9px] text-fg-3">{ROBOT_LABEL[u.type]}</div>
             <div className="mt-1 flex items-center gap-1.5"><Bar value={b} /><span className="mono text-[9px] text-fg-2">{Math.round(b)}%</span></div>
@@ -45,7 +45,7 @@ export function CommandBar() {
         <Cmd icon={<X size={13} />} label="Deselect" hint="Esc" onClick={() => select([])} />
       </div>
       {/* route builder */}
-      <div className="flex min-w-[190px] flex-col justify-between border-l border-line pl-2 text-[10px]">
+      <div className="flex w-[180px] shrink-0 flex-col justify-between border-l border-line pl-2 text-[10px]">
         <div className="flex items-center justify-between text-fg-2"><span className="flex items-center gap-1 font-semibold"><Route size={12} />Route builder</span><span className="mono text-fg-3">{route.length} wp</span></div>
         <div className="text-fg-3">shift + right-click to add waypoints</div>
         <div className="flex items-center gap-1">
@@ -59,7 +59,7 @@ export function CommandBar() {
   )
 }
 function Cmd({ icon, label, hint, onClick, active, tone }: { icon: React.ReactNode; label: string; hint?: string; onClick: () => void; active?: boolean; tone?: 'warn' }) {
-  return <button onClick={onClick} className={clsx('flex h-[52px] w-[64px] flex-col items-center justify-center gap-0.5 rounded-md border text-[10px] transition-colors',
+  return <button onClick={onClick} className={clsx('flex h-[50px] w-[58px] shrink-0 flex-col items-center justify-center gap-0.5 rounded-md border text-[10px] transition-colors',
     active ? 'border-leaf-2 bg-leaf-2/20 text-leaf' : tone === 'warn' ? 'border-line bg-panel-2/60 text-sun hover:bg-sun/10' : 'border-line bg-panel-2/60 text-fg hover:bg-line')}>
     {icon}<span>{label}</span>{hint && <span className="text-[8px] text-fg-3">{hint}</span>}</button>
 }

@@ -71,7 +71,7 @@ export default function App() {
             {view === 'plan' && farm?.plan && <div className="pointer-events-none absolute bottom-3 left-3"><Legend /></div>}
             {view === 'ops' && farm?.plan && <div className="pointer-events-none absolute left-3 top-3"><Legend compact /></div>}
             {view === 'ops' && <CommandBar />}
-            {view === 'ops' && <div className="pointer-events-none absolute bottom-3 right-3 rounded-md bg-bg/80 px-2 py-1 text-[10px] text-fg-3">click unit · ctrl+click multi · right-click move · shift+right-click waypoint</div>}
+            {view === 'ops' && <div className="pointer-events-none absolute right-12 top-3 rounded-md bg-bg/80 px-2 py-1 text-[10px] text-fg-3">click unit · ctrl+click multi · right-click move · shift+right-click waypoint</div>}
           </div>
         </main>
       </div>

@@ -19,7 +19,7 @@ export default defineConfig({
     rollupOptions: {
       output: {
         manualChunks(id: string) {
-          if (/node_modules\/(maplibre-gl|@mapbox\/mapbox-gl-draw|h3-js|@turf)/.test(id)) return 'map'
+          if (/node_modules\/(maplibre-gl|h3-js|@turf)/.test(id)) return 'map'
         },
       },
     },

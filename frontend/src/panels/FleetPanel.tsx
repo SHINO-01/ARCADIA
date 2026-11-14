@@ -1,20 +1,15 @@
 import { useEffect, useRef, useState } from 'react'
-import { Battery, Crosshair, Home, Pause, Play, Power, Radio, Zap } from 'lucide-react'
+import { Battery, Play, Power, Radio } from 'lucide-react'
 import { clsx } from 'clsx'
 import { api } from '../lib/api'
 import { ROBOT_COLOR, ROBOT_LABEL, STATUS_COLOR, type Robot } from '../lib/types'
 import { liveRegistry, useLive } from '../store/live'
-import { useUI, type DispatchKind } from '../store/ui'
+import { useUI } from '../store/ui'
 import { Bar, Chip, Dot, Panel, Spark } from '../components/ui'
-
-const DISPATCH_KINDS: Record<string, DispatchKind[]> = {
-  scout_uav: ['survey', 'goto'], seeder_ugv: ['seed', 'weed', 'harvest', 'goto'], cropcare_ugv: ['weed', 'seed', 'harvest', 'goto'],
-  harvester_ugv: ['harvest', 'weed', 'seed', 'goto'], logistics_agv: ['goto'],
-}
 
 export function FleetPanel() {
   const fleet = useLive((s) => s.fleet)
-  const { selectedRobot, selectRobot, dispatchArm, armDispatch, notify } = useUI()
+  const { selectedRobot, selectRobot, notify } = useUI()
   const robots = Object.values(fleet).sort((a, b) => Number(b.active) - Number(a.active) || a.id.localeCompare(b.id))
   const active = robots.filter((r) => r.active).length
 
@@ -22,10 +17,8 @@ export function FleetPanel() {
     <Panel title="Fleet" right={<span className="mono text-[10px] text-fg-3">{active} active / {robots.length} total · cap 2</span>} bodyClass="p-2 space-y-2">
       {robots.length === 0 && <p className="p-2 text-xs text-fg-3">No fleet provisioned. Draw a boundary, plan infrastructure, then activate the farm.</p>}
       {robots.map((r) => (
-        <RobotCard key={r.id} r={r} selected={selectedRobot === r.id} armed={dispatchArm?.robotId === r.id}
+        <RobotCard key={r.id} r={r} selected={selectedRobot === r.id}
           onSelect={() => selectRobot(selectedRobot === r.id ? null : r.id)}
-          onArm={(kind) => armDispatch(dispatchArm?.robotId === r.id && dispatchArm.kind === kind ? null : { robotId: r.id, kind })}
-          onHome={async () => { try { await api.returnHome(r.id); notify(`${r.id} recalled to dock`, 'ok') } catch (e) { notify((e as Error).message, 'err') } }}
           onResume={async () => { await api.resumeAuto(r.id); notify(`${r.id} back under automated dispatch`, 'ok') }}
           onPower={async () => { try { await api.power(r.id, !r.active); notify(`${r.id} ${r.active ? 'powered down' : 'powered up'}`, 'ok') } catch (e) { notify((e as Error).message, 'err') } }}
         />
@@ -34,8 +27,8 @@ export function FleetPanel() {
   )
 }
 
-function RobotCard({ r, selected, armed, onSelect, onArm, onHome, onResume, onPower }: {
-  r: Robot; selected: boolean; armed: boolean; onSelect: () => void; onArm: (k: DispatchKind) => void; onHome: () => void; onResume: () => void; onPower: () => void
+function RobotCard({ r, selected, onSelect, onResume, onPower }: {
+  r: Robot; selected: boolean; onSelect: () => void; onResume: () => void; onPower: () => void
 }) {
   const color = ROBOT_COLOR[r.type] ?? '#fff'
   const sColor = STATUS_COLOR[r.status] ?? '#a3b8aa'
@@ -81,16 +74,10 @@ function RobotCard({ r, selected, armed, onSelect, onArm, onHome, onResume, onPo
       </div>
       {r.fault && <div className="mono mt-1.5 rounded bg-alert/10 px-2 py-1 text-[10px] text-alert">⚠ {String((r.fault as { fault?: string }).fault)} {JSON.stringify((r.fault as { params?: unknown }).params ?? {})}</div>}
       {selected && (
-        <div className="mt-2 flex flex-wrap gap-1.5 border-t border-line pt-2">
-          {(DISPATCH_KINDS[r.type] ?? ['goto']).map((k) => (
-            <button key={k} className={clsx('btn', armed && useUI.getState().dispatchArm?.kind === k && 'btn-primary')} disabled={!r.active || r.status === 'stranded'} onClick={() => onArm(k)} title="Then click a hex on the map">
-              <Crosshair size={12} />{k}
-            </button>
-          ))}
-          <button className="btn" disabled={!r.active} onClick={onHome} title="Recall to charging dock"><Home size={12} />dock</button>
-          {r.manual_override ? <button className="btn" onClick={onResume}><Play size={12} />auto</button> : <button className="btn" disabled title="Under automated dispatch"><Pause size={12} />auto</button>}
-          <button className="btn" onClick={onPower} title={r.active ? 'Power down' : 'Power up (respects active cap)'}><Power size={12} />{r.active ? 'off' : 'on'}</button>
-          {r.type === 'scout_uav' && <span className="ml-auto flex items-center gap-1 text-[10px] text-sun"><Zap size={10} />solar skin</span>}
+        <div className="mt-2 flex items-center gap-1.5 border-t border-line pt-2 text-[10px] text-fg-3">
+          <span>orders in the command bar below the map</span>
+          {r.manual_override ? <button className="btn ml-auto" onClick={onResume}><Play size={12} />auto</button> : null}
+          <button className={r.manual_override ? 'btn' : 'btn ml-auto'} onClick={onPower} title={r.active ? 'Power down' : 'Power up (respects active cap)'}><Power size={12} />{r.active ? 'off' : 'on'}</button>
         </div>
       )}
     </div>

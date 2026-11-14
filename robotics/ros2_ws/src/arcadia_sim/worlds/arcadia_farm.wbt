@@ -2,8 +2,6 @@
 # ARCADIA digital-twin world. Deliberately minimal: the C++ supervisor procedurally spawns the
 # farm (terrain plane, hex crops, docks, storage, robots) from the backend's world-config JSON.
 
-EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/objects/backgrounds/protos/TexturedBackground.proto"
-EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/objects/backgrounds/protos/TexturedBackgroundLight.proto"
 IMPORTABLE EXTERNPROTO "../protos/ArcadiaUGV.proto"
 IMPORTABLE EXTERNPROTO "../protos/ArcadiaAGV.proto"
 IMPORTABLE EXTERNPROTO "../protos/ArcadiaUAV.proto"
@@ -25,8 +23,16 @@ DEF VIEWPOINT Viewpoint {
   follow ""
   followType "Pan and Tilt Shot"
 }
-TexturedBackground { texture "noon_cloudy_countryside" }
-TexturedBackgroundLight { texture "noon_cloudy_countryside" castShadows FALSE }
+# Plain sky + sun: no HDR cube maps to stream to the browser viewer, cheap on integrated graphics
+Background {
+  skyColor [ 0.64 0.79 0.93 ]
+  luminosity 0.9
+}
+DirectionalLight {
+  direction -0.4 -0.5 -1
+  intensity 1.8
+  castShadows FALSE
+}
 DEF GROUND Solid {
   name "ground"
   children [
