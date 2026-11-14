@@ -119,6 +119,15 @@ class ArcadiaSupervisor : public rclcpp::Node {
   void onEvent(const Event &e) {
     json p;
     try { p = e.payload_json.empty() ? json::object() : json::parse(e.payload_json); } catch (...) { p = json::object(); }
+    if (e.kind == "robot_online" && world_.loaded) {
+      // A controller that boots after the farm was spawned missed the world_load: replay it so the
+      // robot learns its home dock (return-to-dock reflex, return_home) and active flag.
+      Command c;
+      c.command_id = "sup-replay"; c.robot_id = ""; c.kind = "world_load";
+      c.payload_json = json{{"farm_id", world_.farm_id}, {"world", world_.config}}.dump();
+      pub_cmd_->publish(c);
+      return;
+    }
     if (e.kind == "seeded" || e.kind == "weeded" || e.kind == "harvested") {
       truth_.onRobotEvent(e.kind, e.h3, p);
     } else if (e.kind == "tow_attached") {
