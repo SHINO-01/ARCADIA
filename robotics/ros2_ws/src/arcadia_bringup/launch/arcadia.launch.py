@@ -22,6 +22,10 @@ from launch_ros.actions import Node
 
 ROBOTS = ["uav-1", "ugv-1", "agv-1"]
 
+# Everything runs on this laptop: keep DDS discovery on loopback so Wi-Fi changes/sleep never
+# break the graph (multicast writes to a vanished interface spam CycloneDDS errors otherwise).
+os.environ.setdefault("ROS_AUTOMATIC_DISCOVERY_RANGE", "LOCALHOST")
+
 
 def _webots_home() -> str:
     candidates = (os.environ.get("WEBOTS_HOME"), os.path.expanduser("~/opt/webots"), os.path.expanduser("~/webots"),

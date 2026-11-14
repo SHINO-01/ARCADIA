@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 
 TIME_COMPRESSION = 12.0
 WORK_S = {"seed": 6.0, "weed": 5.0, "harvest": 8.0}
+BATTERY_RESERVE_PCT = 22.0  # below this a robot abandons its mission and returns to its dock on its own
 
 
 @dataclass
@@ -142,6 +143,21 @@ class Behaviour:
         if self.wp_i >= len(wps):
             return None
         return wps[self.wp_i]
+
+    def low_battery_rth(self, home_xy: tuple[float, float] | None) -> bool:
+        """Autonomous reflex: abandon the current task and head for the charging dock."""
+        if home_xy is None or self.immobilised or self.status in ("charging", "offline", "returning", "towing"):
+            return False
+        if self.battery.pct > BATTERY_RESERVE_PCT:
+            return False
+        mid = self.mission.get("mission_id", "") if self.mission else ""
+        kind = self.mission.get("kind") if self.mission else None
+        if self.mission:
+            self.mission = None
+            self.emit("mission_failed", "WARN", mission_id=mid, reason="low battery - returning to dock", kind=kind)
+        self.start_mission({"mission_id": f"rth-{self.robot_id}-{int(self.sim_time)}", "kind": "charge",
+                            "waypoints": [{"x": home_xy[0], "y": home_xy[1], "z": 0.0}]}, home_xy)
+        return True
 
     def tick(self, dt: float, pos: tuple[float, float, float], irradiance: float) -> dict | None:
         """Advance the state machine. Returns the waypoint to drive towards (or None to hold)."""

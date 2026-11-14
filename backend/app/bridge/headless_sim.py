@@ -319,6 +319,14 @@ class HeadlessTwin:
             return
 
         m = r.mission
+        if r.battery_pct < 22.0 and m.get("kind") not in ("charge", "tow") and r.status != "returning":
+            mid = m.get("mission_id")
+            r.mission = None
+            await self.on_event(SimEvent(kind="mission_failed", robot_id=r.id, mission_id=mid, severity="WARN",
+                                         payload={"reason": "low battery - returning to dock", "kind": m.get("kind")}))
+            await self._start_mission(r, {"mission_id": f"rth-{r.id}-{int(self.sim_time)}", "kind": "charge",
+                                          "waypoints": [self._home_wp(r)]})
+            return
         wps = m.get("waypoints") or []
         if r.work_until > self.sim_time:
             r.speed = 0.0

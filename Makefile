@@ -2,6 +2,8 @@
 SHELL := /bin/bash
 ROS_DISTRO ?= lyrical
 WS := robotics/ros2_ws
+API_URL ?= http://localhost:8080/api
+export WEBOTS_HOME ?= $(HOME)/opt/webots
 
 .PHONY: help up down logs ps web-build backend-dev backend-test frontend-dev frontend-build \
         robotics-build sim sim-headless seed-demo clean
@@ -41,11 +43,11 @@ robotics-build: ## colcon build of the ROS 2 workspace (native)
 
 sim: ## Launch Webots + fleet controllers + rosbridge + diagnostics (native)
 	source /opt/ros/$(ROS_DISTRO)/setup.bash && source $(WS)/install/setup.bash && \
-	ros2 launch arcadia_bringup arcadia.launch.py
+	ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST ros2 launch arcadia_bringup arcadia.launch.py api_url:=$(API_URL)
 
 sim-headless: ## Launch the ROS 2 fleet without the Webots GUI (minimised, no rendering)
 	source /opt/ros/$(ROS_DISTRO)/setup.bash && source $(WS)/install/setup.bash && \
-	ros2 launch arcadia_bringup arcadia.launch.py gui:=false
+	ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST ros2 launch arcadia_bringup arcadia.launch.py gui:=false api_url:=$(API_URL)
 
 seed-demo: ## Create, plan and activate a demo farm through the API
 	python3 scripts/seed_demo.py

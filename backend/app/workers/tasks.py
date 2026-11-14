@@ -34,8 +34,9 @@ def _now() -> datetime:
 @celery_app.task(name="arcadia.dispatch.tick")
 def auto_dispatch_tick() -> dict:
     """Look at idle robots and the known field state; create and dispatch missions."""
+    released = _release_queued_missions()
     if sync_dispatch_paused():
-        return {"skipped": "paused"}
+        return {"skipped": "paused", "released": released}
     farm_id = sync_active_farm_id()
     if not farm_id:
         return {"skipped": "no active farm"}
@@ -64,6 +65,30 @@ def auto_dispatch_tick() -> dict:
     for mid in created:
         dispatch_mission.delay(mid)
     return {"created": created}
+
+
+def _release_queued_missions() -> list[str]:
+    """Hand queued missions (e.g. a second tow) to their robot once it is idle."""
+    fleet = sync_get_fleet()
+    paused = sync_dispatch_paused()
+    out = []
+    with sync_session() as s:
+        queued = s.execute(select(Mission).where(Mission.status == "queued", Mission.robot_id.is_not(None))
+                           .order_by(Mission.priority, Mission.created_at)).scalars().all()
+        for m in queued:
+            if paused and m.source != "recovery":
+                continue
+            st = fleet.get(m.robot_id or "", {})
+            if st.get("status") != "idle" or st.get("fault"):
+                continue
+            busy = s.execute(select(Mission.id).where(Mission.robot_id == m.robot_id,
+                                                      Mission.status.in_(("dispatched", "running")))).first()
+            if busy:
+                continue
+            out.append(m.id)
+    for mid in out:
+        dispatch_mission.delay(mid)
+    return out
 
 
 @celery_app.task(name="arcadia.dispatch.mission", bind=True, max_retries=3)
@@ -168,17 +193,22 @@ def recovery_protocol(incident_id: str) -> dict:
         wps = [{"x": sx, "y": sy, "z": 0.0}]
         if home is not None:
             wps.append({"x": home.x, "y": home.y, "z": 0.0, "h3": home.h3_index, "lat": home.lat, "lng": home.lng})
+        agv_busy = s.execute(select(Mission.id).where(Mission.robot_id == agv.id,
+                                                      Mission.status.in_(("dispatched", "running")))).first() is not None
         m = Mission(farm_id=inc.farm_id, robot_id=agv.id, kind="tow", source="recovery", priority=0, waypoints=wps,
                     payload={"target_robot": stranded.id, "incident_id": inc.id, "dropoff": home.slug if home else None},
-                    note=f"Tow {stranded.name} to {home.slug if home else 'dock'}")
+                    note=f"Tow {stranded.name} to {home.slug if home else 'dock'}" + (" (queued behind current tow)" if agv_busy else ""))
         s.add(m)
         s.flush()
         inc.state = "recovering"
         inc.recovery_mission_id = m.id
         agv.active = True
-        agv.status = "idle"
+        agv.status = agv.status if agv_busy else "idle"
         s.commit()
         mission_id, agv_id = m.id, agv.id
+    if agv_busy:  # the dispatcher tick hands queued missions to robots as they become idle
+        sync_publish_dashboard({"t": "incident", "id": incident_id, "state": "recovering", "recovery_mission_id": mission_id})
+        return {"mission": mission_id, "queued": True}
     # Power the AGV up (it idles in storage, powered down, to respect the active-robot cap).
     sync_send_command(Command(kind="set_active", robot_id=agv_id, payload={"active": True}))
     sync_update_robot(agv_id, active=True, status="idle")

@@ -27,7 +27,8 @@ sudo bash robotics/scripts/install_ros2_apt.sh
 cp .env.example .env            # optional: VITE_MAPBOX_TOKEN for Mapbox imagery (Esri imagery is the default)
 make up                         # http://localhost:8080  (API docs: /api/docs)
 
-# 3. Native robotics (Webots must be installed: snap install webots)
+# 3. Native robotics — Webots R2025a as a user-space tarball (the snap cannot open a Wayland display)
+bash robotics/scripts/install_webots_tarball.sh     # -> ~/opt/webots, sets WEBOTS_HOME in ~/.bashrc
 make robotics-build
 make sim                        # Webots + supervisor + uav-1/ugv-1/agv-1 + rosbridge :9090 + diagnostics
 
@@ -69,8 +70,12 @@ cd frontend && npm run dev        # Vite :5173 proxies /api and /ws to :8000
 | Maintenance modal + AGV tow | `IncidentModal` → `POST /api/incidents/{id}/recover` → Celery `recovery_protocol` |
 | Caddy HTTPS/WebSocket routing | `infra/caddy/Caddyfile` |
 
-## Status / known gaps
-- Backend end-to-end verified in headless mode (farm → plan → activate → auto survey/seed/weed, telemetry persisted, chaos + recovery). `make backend-test` passes (6 tests).
-- Frontend builds and renders live data; **the Vite dev proxy for `/ws` showed the socket as disconnected in the last check** — verify `/ws/telemetry` through Caddy (`make up`) or adjust the proxy. The hex layer also needs a check after `fitBounds`.
-- ROS 2 workspace builds (`colcon`), but **`make sim` has not yet been run end-to-end** with Webots: launching from a non-GUI shell failed to open the Wayland display, so run it from a desktop terminal. Expect first-run fixes in the controller/supervisor (device names, proto fields).
-- Nav2/MoveIt 2 are intentionally not launched (RAM budget); waypoint tracking is a lightweight pure-pursuit follower with LiDAR avoidance. Harvester arm kinematics are mocked by dwell time.
+## Verified end to end (2026-11-14, IdeaPad Slim 3)
+- Headless twin: farm → H3 grid → K-Means plan → activate → automated survey/seed/weed missions, TimescaleDB telemetry, chaos faults, AGV tow recovery. `make backend-test` passes.
+- Native stack: Webots R2025a (tarball) + ROS 2 Lyrical — supervisor spawns the farm from the backend world config, three extern controllers attach, 50 Hz odometry throttled to 5 Hz `/arcadia/telemetry`, `diagnostic_aggregator` roll-ups, rosbridge ↔ FastAPI hot-swap (the backend switches from headless twin to ROS automatically), dashboard embeds the W3D stream, Chaos Engine motor jam → interruptive modal → Logistics AGV tow in the physics sim.
+
+## Design notes / limits
+- The bridge runs in **auto** mode: headless twin until rosbridge appears, then ROS 2; if the native stack stops it falls back again. On any controller restart the robot sends `robot_online`, which fails its in-flight missions and closes its incidents so state never drifts; a Celery watchdog also times out silent missions.
+- Nav2/MoveIt 2 are intentionally not launched (RAM budget); waypoint tracking is a pure-pursuit follower with LiDAR avoidance, harvester arm kinematics are mocked by dwell time. The UAV is kinematic (no Physics node) and moves itself through its supervisor-enabled controller.
+- Fleet cap: `ARCADIA_MAX_ACTIVE_ROBOTS=2`. The AGV boots powered-down in storage and is woken only for tow recoveries.
+- `scripts/dev_backend.sh` runs the backend natively against the compose Postgres/Redis for fast iteration; the Vite dev server proxies `/api` and `/ws` to it.

@@ -51,7 +51,11 @@ case "${1:-start}" in
     start_one beat "$PY/celery" -A app.workers.celery_app:celery_app beat -l INFO ;;
   stop) for n in beat worker api; do stop_one "$n"; done ;;
   restart) "$0" stop; sleep 1; "$0" start ;;
+  restart-workers)  # Celery only; keeps the API (and its ROS bridge session) running
+    for n in beat worker; do stop_one "$n"; done; sleep 1
+    start_one worker "$PY/celery" -A app.workers.celery_app:celery_app worker -Q dispatch,chaos,telemetry -c 2 -l INFO
+    start_one beat "$PY/celery" -A app.workers.celery_app:celery_app beat -l INFO ;;
   status) for n in api worker beat; do if is_running "$n"; then echo "$n: running"; else echo "$n: stopped"; fi; done ;;
   logs) tail -n 50 -f "$RUN"/*.log ;;
-  *) echo "usage: $0 start|stop|restart|status|logs"; exit 1 ;;
+  *) echo "usage: $0 start|stop|restart|restart-workers|status|logs"; exit 1 ;;
 esac
