@@ -318,12 +318,19 @@ class BridgeManager:
         await events.handle_event(evt, self.farm_id)
 
     async def _persist_loop(self) -> None:
+        last_status = 0.0
         while True:
             await asyncio.sleep(settings.telemetry_persist_interval_s)
             try:
                 await self._flush()
             except Exception as e:  # noqa: BLE001
                 log.warning("telemetry persist failed: %s", e)
+            if time.time() - last_status > 10.0:  # keep dashboard headers honest across reconnects
+                last_status = time.time()
+                try:
+                    await self._publish_status()
+                except Exception as e:  # noqa: BLE001
+                    log.debug("status publish failed: %s", e)
 
     async def _flush(self) -> None:
         if not self._buffer:
