@@ -89,10 +89,12 @@ class ArcadiaSupervisor : public rclcpp::Node {
       try {
         json p = json::parse(c.payload_json);
         const json &cfg = p.contains("world") ? p["world"] : p;
-        if (world_.loaded && world_.farm_id == cfg["farm"]["id"].get<std::string>()) {
+        if (world_.loaded && world_.farm_id == cfg["farm"]["id"].get<std::string>() &&
+            world_.config["farm"].value("revision", 0.0) == cfg["farm"].value("revision", 0.0)) {
           RCLCPP_INFO(get_logger(), "world_load for the already-loaded farm; ignoring");
           return;
         }
+        if (world_.loaded) RCLCPP_INFO(get_logger(), "World revision changed - respawning the farm (controllers reconnect)");
         RCLCPP_INFO(get_logger(), "Spawning farm '%s': %zu cells, %zu infra, %zu robots",
                     cfg["farm"]["name"].get<std::string>().c_str(), cfg["hex"]["cells"].size(), cfg["infrastructure"].size(), cfg["robots"].size());
         spawner_.load(cfg, world_);

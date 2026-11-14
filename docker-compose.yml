@@ -103,7 +103,9 @@ services:
 
   redis:
     image: redis:7-alpine
-    command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "128mb", "--maxmemory-policy", "allkeys-lru"]
+    command: ["redis-server", "--save", "60", "1", "--appendonly", "yes", "--maxmemory", "128mb", "--maxmemory-policy", "volatile-lru"]
+    volumes:
+      - redis_data:/data
     ports:
       - "${REDIS_PORT:-6379}:6379"
     mem_limit: 160m
@@ -116,5 +118,6 @@ services:
 
 volumes:
   pg_data:
+  redis_data:
   caddy_data:
   caddy_config:

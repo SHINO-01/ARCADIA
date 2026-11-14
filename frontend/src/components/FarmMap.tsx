@@ -7,6 +7,7 @@
  */
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react'
 import * as maplibregl from 'maplibre-gl'
+import maplibreWorkerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?url'
 import type { Map as MLMap, MapMouseEvent, MapGeoJSONFeature, GeoJSONSource, StyleSpecification, IControl, RequestTransformFunction } from 'maplibre-gl'
 import MapboxDraw from '@mapbox/mapbox-gl-draw'
 import 'maplibre-gl/dist/maplibre-gl.css'
@@ -26,6 +27,9 @@ DrawCtor.constants.classes.CONTROL_BASE = 'maplibregl-ctrl'
 DrawCtor.constants.classes.CONTROL_PREFIX = 'maplibregl-ctrl-'
 DrawCtor.constants.classes.CONTROL_GROUP = 'maplibregl-ctrl-group'
 DrawCtor.constants.classes.ATTRIBUTION = 'maplibregl-ctrl-attrib'
+
+// The bundler does not emit MapLibre's worker on its own; hand it an explicit asset URL.
+maplibregl.setWorkerUrl(maplibreWorkerUrl)
 
 const MAPBOX_TOKEN = import.meta.env.VITE_MAPBOX_TOKEN as string | undefined
 const SATELLITE_STYLE: StyleSpecification = {
@@ -166,8 +170,11 @@ export const FarmMap = forwardRef<FarmMapHandle, FarmMapProps>(function FarmMap(
     })
 
     mapRef.current = map
+    // The map container is re-positioned over whichever view hosts it; track its own size.
+    const ro = new ResizeObserver(() => map.resize())
+    ro.observe(el.current)
     if (import.meta.env.DEV) (window as unknown as { __map?: MLMap }).__map = map
-    return () => { altaraRef.current?.destroy(); map.remove(); mapRef.current = null }
+    return () => { ro.disconnect(); altaraRef.current?.destroy(); map.remove(); mapRef.current = null }
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   // resize when the view that hosts the map becomes visible again

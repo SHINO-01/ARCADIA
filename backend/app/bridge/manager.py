@@ -163,11 +163,25 @@ class BridgeManager:
 
     # ------------------------------------------------------------------ world
     async def _load_active_farm(self) -> None:
+        """Restore the live farm. Redis is the hot cache; the database is the source of truth, so a
+        Redis restart (or `docker compose down`) must not lose the active twin."""
+        from app.models import Robot
+
         fid = await fleet.get_active_farm_id()
-        if not fid:
-            return
         async with session_scope() as s:
-            farm = (await s.execute(select(Farm).where(Farm.id == fid))).scalar_one_or_none()
+            farm = None
+            if fid:
+                farm = (await s.execute(select(Farm).where(Farm.id == fid))).scalar_one_or_none()
+            if farm is None:
+                farm = (await s.execute(select(Farm).where(Farm.status == "active").order_by(Farm.updated_at.desc()))).scalars().first()
+                if farm is not None:
+                    log.info("Restoring active farm %s from the database (Redis had no active farm)", farm.id)
+                    await fleet.set_active_farm_id(farm.id)
+                    robots = (await s.execute(select(Robot).where(Robot.farm_id == farm.id))).scalars().all()
+                    if robots and not await fleet.get_fleet():
+                        await fleet.set_fleet([{"id": r.id, "type": r.type, "name": r.name, "status": r.status, "active": r.active,
+                                                "battery_pct": r.battery_pct, "x": r.x, "y": r.y, "z": r.z, "lat": r.lat, "lng": r.lng,
+                                                "heading": r.heading, "speed": 0.0, "home": r.home_dock} for r in robots])
         if farm and farm.world_config:
             self._set_world(farm)
 

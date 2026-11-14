@@ -10,5 +10,5 @@ RUN npm run build
 
 FROM caddy:2-alpine
 COPY --from=build /app/dist /srv
-RUN printf ':80 {\n\troot * /srv\n\tencode gzip\n\ttry_files {path} /index.html\n\tfile_server\n\theader Cache-Control "public, max-age=3600"\n}\n' > /etc/caddy/Caddyfile
+RUN printf ':80 {\n\troot * /srv\n\tencode gzip\n\t@assets path /assets/*\n\theader @assets Cache-Control "public, max-age=31536000, immutable"\n\theader Cache-Control "no-cache"\n\ttry_files {path} /index.html\n\tfile_server\n}\n' > /etc/caddy/Caddyfile
 EXPOSE 80

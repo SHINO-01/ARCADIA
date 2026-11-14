@@ -6,6 +6,7 @@ the simulator never has to know about geodesy. Lat/lng are included for convenie
 from __future__ import annotations
 
 import math
+import time
 
 from app.core.config import settings
 from app.services.h3_engine import CROP_HEIGHT_M, HexGrid
@@ -92,7 +93,7 @@ def build_world_config(farm_id: str, farm_name: str, grid: HexGrid, plan: PlanRe
         })
 
     return {
-        "schema": 2, "farm": {"id": farm_id, "name": farm_name, "seed": seed,
+        "schema": 2, "farm": {"id": farm_id, "name": farm_name, "seed": seed, "revision": round(time.time(), 3),
                               "origin": {"lat": grid.origin.lat, "lng": grid.origin.lng},
                               "area_m2": round(grid.area_m2, 1)},
         "terrain": {"min_x": round(minx, 2), "max_x": round(maxx, 2), "min_y": round(miny, 2),
