@@ -198,15 +198,20 @@ class ArcadiaRobot(Node):
         tx, ty = target["x"] + self.glitch_bias[0], target["y"] + self.glitch_bias[1]
         dx, dy = tx - pos[0], ty - pos[1]
         dist = math.hypot(dx, dy)
-        if dist < 0.45:
+        # A tow approaches another robot: the winch attaches from ~2 m, and the target itself must
+        # not be treated as an obstacle during the final approach.
+        approaching_robot = self.b.mission is not None and self.b.mission.get("kind") == "tow" and self.b.tow_phase == 0
+        reach = 2.0 if approaching_robot else 0.45
+        if dist < reach:
             self.set_wheels(0.0, 0.0)
             self.b.reached(target)
             return 0.0
         desired = math.atan2(dy, dx)
         err = math.atan2(math.sin(desired - yaw), math.cos(desired - yaw))
         # LiDAR obstacle avoidance: steer away from the closest return in the front arc
+        # (disabled inside the last few metres so the goal itself cannot repel the robot)
         avoid = 0.0
-        if self.lidar is not None:
+        if self.lidar is not None and dist > 3.5:
             ranges = self.lidar.getRangeImage()
             n = len(ranges)
             if n:
@@ -296,8 +301,10 @@ class ArcadiaRobot(Node):
             elif self.b.immobilised:
                 torque_w = 0.0  # electronics only
             else:
+                # Skid-steer wheel scrub inflates torque feedback (all four wheels are fixed), so the
+                # mechanical term is scaled to a realistic drivetrain draw and clamped.
                 mech_w = sum(abs(m.getTorqueFeedback()) * abs(m.getVelocity()) for m in self.motors)
-                torque_w = min(mech_w, 3500.0) * 1.15 + 150.0 * (speed / self.spec["max_speed"])
+                torque_w = min(mech_w * 0.3, 1500.0) + 150.0 * (speed / self.spec["max_speed"])
             if self.b.status != "charging":
                 self.b.battery.step(self.dt, torque_w, self.irradiance)
             self.b.motor_temp = min(88.0, self.b.motor_temp + self.dt * 0.9 * (speed / self.spec["max_speed"])) if speed > 0.05 \
