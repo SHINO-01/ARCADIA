@@ -24,8 +24,9 @@ FAULT_TITLES = {
     "battery_drop": "Electrical fault: battery voltage collapse",
     "network_latency": "Network degradation: telemetry latency spike",
     "sensor_glitch": "Sensor fault: localisation glitch",
+    "stuck_terrain": "Terrain entrapment: wheels slipping, unit immobilised",
 }
-TOW_REQUIRED = {"motor_jam", "battery_drop"}
+TOW_REQUIRED = {"motor_jam", "battery_drop", "stuck_terrain"}
 
 
 def _now() -> datetime:

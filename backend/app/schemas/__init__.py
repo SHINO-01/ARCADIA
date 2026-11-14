@@ -7,8 +7,8 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 # ----------------------------------------------------------------------------- wire protocol
-FaultKind = Literal["motor_jam", "battery_drop", "network_latency", "sensor_glitch"]
-MissionKind = Literal["survey", "seed", "weed", "harvest", "tow", "charge", "goto"]
+FaultKind = Literal["motor_jam", "battery_drop", "network_latency", "sensor_glitch", "stuck_terrain"]
+MissionKind = Literal["survey", "seed", "weed", "harvest", "tow", "charge", "goto", "patrol"]
 RobotStatus = Literal["idle", "active", "charging", "fault", "stranded", "towing", "towed", "offline", "returning"]
 
 
@@ -57,7 +57,7 @@ class SimEvent(BaseModel):
 class Command(BaseModel):
     """Backend -> simulation command (ROS arcadia_msgs/Command mirrors this)."""
     kind: Literal["mission", "cancel", "return_home", "chaos", "clear_fault", "world_load",
-                  "set_active", "tow", "pause", "resume", "set_speed"]
+                  "set_active", "tow", "pause", "resume", "set_speed", "set_view", "set_irradiance"]
     robot_id: str | None = None
     payload: dict[str, Any] = Field(default_factory=dict)
     command_id: str | None = None
@@ -83,6 +83,18 @@ class PlanRequest(BaseModel):
     k_docks: int | None = Field(default=None, ge=1, le=12)
     k_storage: int | None = Field(default=None, ge=1, le=4)
     seed: int | None = None
+    road_spacing: int = Field(default=6, ge=3, le=20, description="hex rows between travel roads")
+    bed_width: int = Field(default=3, ge=1, le=19, description="road strips per crop bed band")
+    orientation: Literal["ew", "ns"] = "ew"
+    shuffle_crops: bool = False
+
+
+class RouteRequest(BaseModel):
+    """Operator-built route (RTS style): ordered waypoints, optionally looped as a patrol."""
+    waypoints: list[Waypoint] = Field(min_length=1, max_length=64)
+    loop: bool = False
+    kind: Literal["patrol", "goto", "survey"] = "patrol"
+    note: str | None = None
 
 
 class FarmOut(BaseModel):
@@ -104,7 +116,7 @@ class FarmOut(BaseModel):
 class InfrastructureOut(BaseModel):
     id: str
     slug: str
-    kind: str
+    kind: str  # solar_dock | wind_dock | storage | repair_station
     h3_index: str
     lat: float
     lng: float
@@ -159,7 +171,7 @@ class ChaosConfig(BaseModel):
     enabled: bool = True
     interval_s: float = Field(default=90.0, ge=5, le=3600)
     probability: float = Field(default=0.6, ge=0, le=1)
-    kinds: list[FaultKind] = ["motor_jam", "battery_drop", "network_latency", "sensor_glitch"]
+    kinds: list[FaultKind] = ["motor_jam", "battery_drop", "network_latency", "sensor_glitch", "stuck_terrain"]
 
 
 class MissionOut(BaseModel):

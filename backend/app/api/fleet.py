@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_session
 from app.models import Farm, HexCell, Infrastructure, Mission, Robot
-from app.schemas import Command, DispatchRequest, MissionOut, RobotOut
+from app.schemas import Command, DispatchRequest, MissionOut, RobotOut, RouteRequest
 from app.services import fleet
 from app.services.geo import Origin
 from app.workers.tasks import dispatch_mission
@@ -62,14 +62,76 @@ async def operator_dispatch(robot_id: str, body: DispatchRequest, s: AsyncSessio
     if live.get("current_mission_id") or live.get("mission_id"):
         await fleet.send_command(Command(kind="cancel", robot_id=robot_id, payload={}))
     kind = body.kind if body.kind in ("goto", "seed", "weed", "harvest", "survey", "charge") else "goto"
+    if robot.type == "scout_uav":
+        wps = [{**target, "z": z}]
+    else:
+        from app.services.routing import RoadNetwork
+        rows = (await s.execute(select(HexCell.h3_index, HexCell.x, HexCell.y, HexCell.lat, HexCell.lng, HexCell.kind)
+                                .where(HexCell.farm_id == farm.id))).all()
+        net = RoadNetwork([{"h3": r[0], "x": r[1], "y": r[2], "lat": r[3], "lng": r[4], "kind": r[5]} for r in rows])
+        wps = [w.model_dump() for w in net.route(float(live.get("x", robot.x or 0)), float(live.get("y", robot.y or 0)), target)]
     m = Mission(farm_id=farm.id, robot_id=robot_id, kind=kind, source="operator", priority=body.priority,
-                target_h3=target.get("h3"), waypoints=[{**target, "z": z}], payload={"crop": None}, note=body.note or "Operator override")
+                target_h3=target.get("h3"), waypoints=wps, payload={"crop": None}, note=body.note or "Operator override")
     s.add(m)
     await s.commit()
     await s.refresh(m)
     dispatch_mission.delay(m.id)
     await fleet.update_robot(robot_id, manual_override=True)
     return m
+
+
+@router.post("/view")
+async def set_view(follow: str = "", mode: str = "pan"):
+    """3D twin camera: follow a robot (Webots Viewpoint.follow) or return to the farm overview."""
+    await fleet.send_command(Command(kind="set_view", payload={"follow": follow or "", "mode": mode}))
+    await fleet.publish_dashboard({"t": "view", "follow": follow or None})
+    return {"ok": True, "follow": follow or None}
+
+
+@router.post("/{robot_id}/route", response_model=MissionOut, status_code=201)
+async def operator_route(robot_id: str, body: RouteRequest, s: AsyncSession = Depends(get_session)):
+    """RTS-style route: ordered waypoints (shift+right-click on the map), optionally looped as a patrol."""
+    robot = await s.get(Robot, robot_id)
+    if robot is None or not robot.farm_id:
+        raise HTTPException(404, "robot not found")
+    farm = await s.get(Farm, robot.farm_id)
+    origin = Origin(farm.centroid_lat, farm.centroid_lng)
+    z = 6.0 if robot.type == "scout_uav" else 0.0
+    wps = []
+    for w in body.waypoints:
+        if w.lat is not None and w.lng is not None:
+            x, y = origin.to_xy(w.lat, w.lng)
+            wps.append({"x": round(x, 3), "y": round(y, 3), "z": z, "lat": w.lat, "lng": w.lng,
+                        "h3": h3.latlng_to_cell(w.lat, w.lng, farm.h3_resolution)})
+        else:
+            lat, lng = origin.to_latlng(w.x, w.y)
+            wps.append({"x": w.x, "y": w.y, "z": z, "lat": lat, "lng": lng})
+    for m in (await s.execute(select(Mission).where(Mission.robot_id == robot_id,
+                                                    Mission.status.in_(("queued", "dispatched", "running"))))).scalars():
+        m.status = "cancelled"
+    await fleet.send_command(Command(kind="cancel", robot_id=robot_id, payload={}))
+    kind = "patrol" if body.loop or body.kind == "patrol" else body.kind
+    m = Mission(farm_id=farm.id, robot_id=robot_id, kind=kind, source="operator", priority=1, waypoints=wps,
+                payload={"loop": bool(body.loop), "observe": robot.type == "scout_uav"},
+                note=body.note or (f"Patrol route · {len(wps)} waypoints" + (" (loop)" if body.loop else "")))
+    s.add(m)
+    await s.commit()
+    await s.refresh(m)
+    dispatch_mission.delay(m.id)
+    await fleet.update_robot(robot_id, manual_override=True)
+    return m
+
+
+@router.post("/{robot_id}/stop")
+async def stop_robot(robot_id: str, s: AsyncSession = Depends(get_session)):
+    """RTS 'stop': cancel whatever the unit is doing and hold position (stays under manual control)."""
+    for m in (await s.execute(select(Mission).where(Mission.robot_id == robot_id,
+                                                    Mission.status.in_(("queued", "dispatched", "running"))))).scalars():
+        m.status = "cancelled"
+    await s.commit()
+    await fleet.send_command(Command(kind="cancel", robot_id=robot_id, payload={}))
+    await fleet.update_robot(robot_id, manual_override=True, current_mission_id=None, mission_id=None, status="idle")
+    return {"ok": True}
 
 
 @router.post("/{robot_id}/return-home", response_model=MissionOut, status_code=201)

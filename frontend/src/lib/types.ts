@@ -46,11 +46,17 @@ export interface PlannedSite {
   cluster_size: number; capacity_kw: number; storage_kwh: number
 }
 
+export interface Bed { id: string; crop: string; cells: string[]; centroid_x: number; centroid_y: number }
+
 export interface PlanReport {
-  docks: PlannedSite[]; storage: PlannedSite[]; k_docks: number; k_storage: number
-  inertia: number; iterations: number; converged: boolean
+  docks: PlannedSite[]; storage: PlannedSite[]; repair: PlannedSite[]; roads: number; beds: Bed[]
+  k_docks: number; k_storage: number; inertia: number; iterations: number; converged: boolean
   mean_travel_m: number; p95_travel_m: number; max_travel_m: number
+  road_spacing: number; bed_width: number; orientation: 'ew' | 'ns'; road_cells: number; crop_cells: number
 }
+
+export interface PlanParams { k_docks?: number | null; k_storage?: number | null; seed?: number | null; road_spacing: number; bed_width: number; orientation: 'ew' | 'ns'; shuffle_crops: boolean }
+export interface ChaosPreset { id: string; label: string; robot_type: string; kind: string }
 
 export interface Infrastructure {
   id: string; slug: string; kind: string; h3_index: string; lat: number; lng: number; x: number; y: number
@@ -100,6 +106,10 @@ export const ROBOT_LABEL: Record<string, string> = {
 export const ROBOT_COLOR: Record<string, string> = {
   scout_uav: '#5cc8ff', seeder_ugv: '#f5c451', cropcare_ugv: '#7ce38b', harvester_ugv: '#ff9f6b', logistics_agv: '#c7a4ff',
 }
+export const INFRA_COLOR: Record<string, string> = { solar_dock: '#f5c451', wind_dock: '#5cc8ff', storage: '#c7a4ff', repair_station: '#ff9f6b', road: '#9aa3a7' }
+export const INFRA_LABEL: Record<string, string> = { solar_dock: 'Solar charging dock', wind_dock: 'Wind charging dock', storage: 'Robot storage', repair_station: 'Repair station', road: 'Travel road' }
+export const CROP_COLORS: Record<string, string> = { wheat: '#e2c27a', maize: '#f0a742', soy: '#8fd17a', tomato: '#ff6b5e', lettuce: '#5fd7a0' }
+
 export const STATUS_COLOR: Record<string, string> = {
   idle: '#a3b8aa', active: '#7ce38b', returning: '#5cc8ff', charging: '#f5c451', fault: '#ff9f6b', stranded: '#ff4d5e',
   towing: '#c7a4ff', towed: '#ff7a59', offline: '#4b5f52',

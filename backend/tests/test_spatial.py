@@ -50,14 +50,21 @@ def test_kmeans_converges():
 def test_plan_and_world_config():
     g = build_hexgrid(RECT)
     plan = plan_infrastructure(g)
+    # repositioning: a different orientation / spacing yields a different road layout
+    alt = plan_infrastructure(build_hexgrid(RECT), orientation="ns", road_spacing=8, bed_width=2)
+    assert set(alt.roads) != set(plan.roads) and alt.orientation == "ns"
     assert plan.k_docks >= 1 and len(plan.storage) >= 1
     sites = {s.h3 for s in plan.docks + plan.storage}
     assert len(sites) == len(plan.docks) + len(plan.storage)  # unique cells
     assert plan.mean_travel_m < plan.max_travel_m
+    assert len(plan.roads) > 10 and len(plan.beds) >= 2 and plan.repair[0].kind == "repair_station"
+    assert all(h not in sites for h in plan.roads)
     w = build_world_config("f", "Farm", g, plan)
-    assert w["schema"] == 1 and w["hex"]["count"] == len(g.cells)
+    assert w["schema"] == 2 and w["hex"]["count"] == len(g.cells)
+    assert any(c["kind"] == "road" for c in w["hex"]["cells"]) and any(c["kind"] == "repair" for c in w["hex"]["cells"])
+    assert any(c.get("bed") for c in w["hex"]["cells"])
     active = [r for r in w["robots"] if r["active"]]
     assert len(active) <= w["limits"]["max_active_robots"]
     assert any(r["type"] == "logistics_agv" and not r["active"] for r in w["robots"])
     kinds = {c["kind"] for c in w["hex"]["cells"]}
-    assert {"crop", "dock", "storage"} <= kinds
+    assert {"crop", "dock", "storage", "road", "repair"} <= kinds

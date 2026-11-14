@@ -68,7 +68,11 @@ class Behaviour:
 
     @property
     def immobilised(self) -> bool:
-        return self.fault is not None and self.fault.kind in ("motor_jam", "battery_drop")
+        return self.fault is not None and self.fault.kind in ("motor_jam", "battery_drop", "stuck_terrain")
+
+    @property
+    def pickup_index(self) -> int:
+        return int((self.mission or {}).get("pickup_index", 0))
 
     # ------------------------------------------------------------- events
     def emit(self, event: str, severity: str = "INFO", h3: str = "", **payload) -> None:
@@ -117,6 +121,9 @@ class Behaviour:
             self.battery.pct = min(self.battery.pct, float(params.get("level_pct", 4.0)))
             self.status = "stranded"
             detail["battery_pct"] = self.battery.pct
+            self.mission = None
+        elif fault == "stuck_terrain":
+            self.status, self.motor_temp = "stranded", 70.0
             self.mission = None
         elif fault == "network_latency":
             self.latency_ms = float(params.get("latency_ms", 1800.0))
@@ -186,10 +193,19 @@ class Behaviour:
         wps = m.get("waypoints") or []
         last = self.wp_i == len(wps) - 1
         if kind == "tow" and self.tow_phase == 0:
+            if self.wp_i < self.pickup_index:  # still on the road leg towards the pickup
+                self.wp_i += 1
+                return
             self.tow_phase = 1
             self.towing = m.get("target_robot")
             self.emit("tow_attached", target=self.towing)
             self.work_until = self.sim_time + 3.0
+        elif kind == "patrol":
+            self.wp_i += 1
+            if self.wp_i >= len(wps) and m.get("loop"):
+                self.wp_i = 0
+                m["_laps"] = int(m.get("_laps", 0)) + 1
+            return
         elif kind in WORK_S and last:
             self.work_until = self.sim_time + WORK_S[kind]
             self.pending_work = wp
@@ -208,8 +224,10 @@ class Behaviour:
         elif kind == "tow":
             self.emit("tow_complete", target=self.towing)
             self.towing = None
-        elif kind == "survey":
+        elif kind in ("survey", "patrol"):
             extra["cells_observed"] = len(self.visited)
+            if kind == "patrol":
+                extra["laps"] = int(m.get("_laps", 0))
         mid = m.get("mission_id", "")
         self.mission = None
         if kind == "charge":

@@ -15,12 +15,15 @@ FAULT_PARAMS = {
     "network_latency": lambda rng: {"latency_ms": rng.choice([900, 1500, 2400, 4000]),
                                     "packet_loss": round(rng.uniform(0.05, 0.4), 2)},
     "sensor_glitch": lambda rng: {"sensor": rng.choice(["gps", "imu", "lidar"]), "bias_m": round(rng.uniform(0.3, 1.5), 2)},
+    "stuck_terrain": lambda rng: {"terrain": rng.choice(["waterlogged bed", "irrigation furrow", "soft shoulder"]),
+                                  "wheel_slip": round(rng.uniform(0.6, 0.95), 2)},
 }
 
 
 # Faults that make physical sense per platform (a UAV has no drive motors to jam).
 FAULTS_BY_TYPE = {
     "scout_uav": ["battery_drop", "network_latency", "sensor_glitch"],
+    "logistics_agv": ["motor_jam", "battery_drop", "network_latency", "sensor_glitch", "stuck_terrain"],
 }
 
 

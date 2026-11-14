@@ -185,18 +185,25 @@ def recovery_protocol(incident_id: str) -> dict:
         agv = s.execute(select(Robot).where(Robot.type == "logistics_agv", Robot.farm_id == inc.farm_id)).scalars().first()
         if stranded is None or agv is None:
             return {"error": "no AGV in fleet"}
+        # Tow destination: the Repair Station when the plan has one, else the unit's home dock.
         home = s.execute(select(Infrastructure).where(Infrastructure.farm_id == inc.farm_id,
-                                                      Infrastructure.slug == (stranded.home_dock or "dock-1"))).scalar_one_or_none()
+                                                      Infrastructure.kind == "repair_station")).scalars().first() or \
+            s.execute(select(Infrastructure).where(Infrastructure.farm_id == inc.farm_id,
+                                                   Infrastructure.slug == (stranded.home_dock or "dock-1"))).scalar_one_or_none()
         fleet = sync_get_fleet()
         st = fleet.get(stranded.id, {})
+        ast = fleet.get(agv.id, {})
         sx, sy = float(st.get("x", stranded.x)), float(st.get("y", stranded.y))
-        wps = [{"x": sx, "y": sy, "z": 0.0}]
+        ax, ay = float(ast.get("x", agv.x)), float(ast.get("y", agv.y))
+        from app.services.dispatcher import ground_route
+        wps = ground_route(s, inc.farm_id, ax, ay, {"x": sx, "y": sy})
         if home is not None:
-            wps.append({"x": home.x, "y": home.y, "z": 0.0, "h3": home.h3_index, "lat": home.lat, "lng": home.lng})
+            wps += ground_route(s, inc.farm_id, sx, sy, {"x": home.x, "y": home.y, "h3": home.h3_index, "lat": home.lat, "lng": home.lng})
         agv_busy = s.execute(select(Mission.id).where(Mission.robot_id == agv.id,
                                                       Mission.status.in_(("dispatched", "running")))).first() is not None
         m = Mission(farm_id=inc.farm_id, robot_id=agv.id, kind="tow", source="recovery", priority=0, waypoints=wps,
-                    payload={"target_robot": stranded.id, "incident_id": inc.id, "dropoff": home.slug if home else None},
+                    payload={"target_robot": stranded.id, "incident_id": inc.id, "dropoff": home.slug if home else None,
+                             "pickup_index": len(ground_route(s, inc.farm_id, ax, ay, {"x": sx, "y": sy})) - 1},
                     note=f"Tow {stranded.name} to {home.slug if home else 'dock'}" + (" (queued behind current tow)" if agv_busy else ""))
         s.add(m)
         s.flush()

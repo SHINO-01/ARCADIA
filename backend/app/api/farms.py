@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import get_farm_or_404
 from app.bridge.manager import bridge
 from app.core.db import get_session
+from app.core.redis import get_redis
 from app.models import Farm, HexCell, Infrastructure, Robot
 from app.schemas import FarmCreate, FarmOut, InfrastructureOut, PlanRequest
 from app.services import fleet
@@ -78,39 +79,82 @@ def _grid_from_db(farm: Farm, cells: list[HexCell]) -> HexGrid:
     import h3 as _h3
     return HexGrid(resolution=farm.h3_resolution, origin=Origin(farm.centroid_lat, farm.centroid_lng), area_m2=farm.area_m2,
                    edge_m=_h3.average_hexagon_edge_length(farm.h3_resolution, unit="m"),
-                   cells=[HexCellSpec(h3=c.h3_index, lat=c.lat, lng=c.lng, x=c.x, y=c.y, crop_type=c.crop_type or "wheat",
-                                      kind="crop", state=c.state, weeds=c.weeds, soil_moisture=c.soil_moisture) for c in cells])
+                   cells=_with_neighbors([HexCellSpec(h3=c.h3_index, lat=c.lat, lng=c.lng, x=c.x, y=c.y, crop_type=c.crop_type or "wheat",
+                                      kind="crop", state=c.state if c.state != "infra" else "fallow", weeds=c.weeds,
+                                      soil_moisture=c.soil_moisture) for c in cells]))
+
+
+def _with_neighbors(specs):
+    import h3 as _h3
+    known = {c.h3 for c in specs}
+    for c in specs:
+        c.neighbors = [n for n in _h3.grid_ring(c.h3, 1) if n in known]
+    return specs
 
 
 @router.post("/{farm_id}/plan", response_model=FarmOut)
 async def plan_farm(farm_id: str, body: PlanRequest, s: AsyncSession = Depends(get_session)):
-    """Sprint 2: K-Means infrastructure planning + world-config payload generation."""
+    """Sprint 2: K-Means docks + storage/repair, travel roads, crop beds, world-config payload.
+    Re-running with other parameters repositions roads and beds."""
     farm = await get_farm_or_404(s, farm_id)
     cells = (await s.execute(select(HexCell).where(HexCell.farm_id == farm_id))).scalars().all()
     grid = _grid_from_db(farm, cells)
     seed = body.seed if body.seed is not None else farm.seed
-    report = plan_infrastructure(grid, body.k_docks, body.k_storage, seed)
-    # reset previous plan
+    report = plan_infrastructure(grid, body.k_docks, body.k_storage, seed, road_spacing=body.road_spacing,
+                                 bed_width=body.bed_width, orientation=body.orientation, shuffle_crops=body.shuffle_crops)
     await s.execute(delete(Infrastructure).where(Infrastructure.farm_id == farm_id))
+    spec_by_h3 = {c.h3: c for c in grid.cells}
+    bed_of = {h: b.id for b in report.beds for h in b.cells}
     for c in cells:
-        if c.kind != "crop":
-            c.kind, c.state = "crop", "fallow"
+        spec = spec_by_h3[c.h3_index]
+        c.kind = "crop"
+        c.bed_id = bed_of.get(c.h3_index)
+        c.crop_type = spec.crop_type
+        if spec.kind == "road":
+            c.kind, c.state, c.crop_type, c.bed_id = "road", "infra", None, None
+        elif c.state == "infra":
+            c.state = "fallow"
     by_h3 = {c.h3_index: c for c in cells}
-    for site in report.docks + report.storage:
+    for site in report.sites:
         s.add(Infrastructure(farm_id=farm_id, slug=site.slug, kind=site.kind, h3_index=site.h3, lat=site.lat, lng=site.lng,
                              x=site.x, y=site.y, cluster_size=site.cluster_size, capacity_kw=site.capacity_kw,
                              storage_kwh=site.storage_kwh, stored_kwh=round(site.storage_kwh * 0.65, 1)))
         cell = by_h3.get(site.h3)
         if cell is not None:
-            cell.kind = "dock" if site.kind.endswith("dock") else "storage"
-            cell.state = "infra"
-            cell.crop_type = None
+            cell.kind = "dock" if site.kind.endswith("dock") else "repair" if site.kind == "repair_station" else "storage"
+            cell.state, cell.crop_type, cell.bed_id = "infra", None, None
     farm.plan = report.to_dict()
     farm.world_config = build_world_config(farm.id, farm.name, grid, report, seed)
     farm.status = "planned" if farm.status != "active" else "active"
     await s.commit()
     await s.refresh(farm)
+    if farm.status == "active":  # re-planning a live farm: push the new world to the sim
+        await bridge.activate_farm(farm, await _robots_state(s, farm))
     return farm
+
+
+async def _robots_state(s: AsyncSession, farm: Farm) -> list[dict]:
+    rows = (await s.execute(select(Robot).where(Robot.farm_id == farm.id))).scalars().all()
+    return [{"id": r.id, "type": r.type, "name": r.name, "status": r.status, "active": r.active, "battery_pct": r.battery_pct,
+             "x": r.x, "y": r.y, "z": r.z, "lat": r.lat, "lng": r.lng, "heading": 0.0, "speed": 0.0, "home": r.home_dock}
+            for r in rows]
+
+
+@router.delete("", status_code=204)
+async def reset_all(s: AsyncSession = Depends(get_session)):
+    """Fresh session: delete every farm (cells, infrastructure, robots cascade) and clear live state."""
+    await fleet.set_active_farm_id(None)
+    await fleet.set_fleet([])
+    await s.execute(delete(Robot))
+    await s.execute(delete(Farm))
+    await s.commit()
+    r = get_redis()
+    keys = [k async for k in r.scan_iter("arcadia:*")]
+    if keys:
+        await r.delete(*keys)
+    bridge.world = None
+    bridge.farm_id = None
+    await fleet.publish_dashboard({"t": "fleet_reset", "robots": []})
 
 
 @router.get("/{farm_id}/world")

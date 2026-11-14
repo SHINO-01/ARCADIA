@@ -120,7 +120,7 @@ def hexgrid_feature_collection(cells, extra=None) -> dict:
     for c in cells:
         props = {
             "h3": getattr(c, "h3", None) or getattr(c, "h3_index", None),
-            "kind": c.kind, "crop_type": c.crop_type, "state": c.state,
+            "kind": c.kind, "crop_type": c.crop_type, "state": c.state, "bed_id": getattr(c, "bed_id", None),
             "weeds": bool(getattr(c, "weeds", False)),
             "soil_moisture": getattr(c, "soil_moisture", 0.5),
             "health": getattr(c, "health", 1.0), "x": c.x, "y": c.y,

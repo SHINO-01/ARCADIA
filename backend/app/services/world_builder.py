@@ -50,25 +50,33 @@ def build_world_config(farm_id: str, farm_name: str, grid: HexGrid, plan: PlanRe
     margin = grid.edge_m * 3
     minx, maxx, miny, maxy = min(xs) - margin, max(xs) + margin, min(ys) - margin, max(ys) + margin
 
-    infra_by_h3 = {d.h3: d for d in plan.docks + plan.storage}
+    infra_by_h3 = {d.h3: d for d in plan.sites}
+    road = set(plan.roads)
+    bed_of = {h: b.id for b in plan.beds for h in b.cells}
     cells = []
     for c in grid.cells:
         site = infra_by_h3.get(c.h3)
+        if site:
+            kind = "dock" if site.kind.endswith("dock") else "repair" if site.kind == "repair_station" else "storage"
+        elif c.h3 in road:
+            kind = "road"
+        else:
+            kind = "crop"
         cells.append({
-            "h3": c.h3, "x": c.x, "y": c.y, "lat": round(c.lat, 7), "lng": round(c.lng, 7),
-            "kind": "dock" if site and site.kind.endswith("dock") else "storage" if site else "crop",
-            "crop": None if site else c.crop_type,
-            "crop_height": 0.0 if site else CROP_HEIGHT_M[c.crop_type],
-            "state": "infra" if site else c.state, "moisture": c.soil_moisture,
+            "h3": c.h3, "x": c.x, "y": c.y, "lat": round(c.lat, 7), "lng": round(c.lng, 7), "kind": kind,
+            "bed": bed_of.get(c.h3), "crop": c.crop_type if kind == "crop" else None,
+            "crop_height": CROP_HEIGHT_M[c.crop_type] if kind == "crop" else 0.0,
+            "state": c.state if kind == "crop" else "infra", "moisture": c.soil_moisture,
+            # waterlogged cells (high moisture) can trap ground vehicles: terrain hazard for the sim
+            "waterlogged": kind == "crop" and c.soil_moisture > 0.78,
         })
 
     infrastructure = [{
-        "id": s.slug, "kind": s.kind, "h3": s.h3, "x": s.x, "y": s.y, "lat": round(s.lat, 7),
-        "lng": round(s.lng, 7), "capacity_kw": s.capacity_kw, "storage_kwh": s.storage_kwh,
-        "cluster_size": s.cluster_size,
-    } for s in plan.docks + plan.storage]
+        "id": s.slug, "kind": s.kind, "h3": s.h3, "x": s.x, "y": s.y, "lat": round(s.lat, 7), "lng": round(s.lng, 7),
+        "capacity_kw": s.capacity_kw, "storage_kwh": s.storage_kwh, "cluster_size": s.cluster_size,
+    } for s in plan.sites]
+    beds = [{"id": b.id, "crop": b.crop, "cells": len(b.cells), "x": b.centroid_x, "y": b.centroid_y} for b in plan.beds]
 
-    # Spawn robots around dock-1 / storage-1, spaced along a ring so they never overlap.
     dock = plan.docks[0]
     store = plan.storage[0]
     robots = []
@@ -78,20 +86,20 @@ def build_world_config(farm_id: str, farm_name: str, grid: HexGrid, plan: PlanRe
         base = store if r["type"] == "logistics_agv" else dock
         robots.append({
             "id": r["id"], "type": r["type"], "name": f"{cat['name']} {r['id'].split('-')[1]}",
-            "active": r["active"], "home": base.slug,
+            "active": r["active"], "home": base.slug, "repair": plan.repair[0].slug if plan.repair else None,
             "x": round(base.x + 2.2 * math.cos(ang), 3), "y": round(base.y + 2.2 * math.sin(ang), 3),
             "z": 0.3 if r["type"] == "scout_uav" else 0.0, "spec": cat,
         })
 
     return {
-        "schema": 1, "farm": {"id": farm_id, "name": farm_name, "seed": seed,
+        "schema": 2, "farm": {"id": farm_id, "name": farm_name, "seed": seed,
                               "origin": {"lat": grid.origin.lat, "lng": grid.origin.lng},
                               "area_m2": round(grid.area_m2, 1)},
         "terrain": {"min_x": round(minx, 2), "max_x": round(maxx, 2), "min_y": round(miny, 2),
                     "max_y": round(maxy, 2), "width": round(maxx - minx, 2), "height": round(maxy - miny, 2)},
-        "hex": {"resolution": grid.resolution, "edge_m": round(grid.edge_m, 3), "count": len(cells),
-                "cells": cells},
-        "infrastructure": infrastructure,
+        "hex": {"resolution": grid.resolution, "edge_m": round(grid.edge_m, 3), "count": len(cells), "cells": cells},
+        "infrastructure": infrastructure, "beds": beds,
+        "roads": {"spacing": plan.road_spacing, "orientation": plan.orientation, "cells": plan.road_cells},
         "robots": robots,
         "limits": {"max_active_robots": settings.max_active_robots},
     }

@@ -58,7 +58,8 @@ class HexCell(Base):
     lng: Mapped[float] = mapped_column(Float, nullable=False)
     x: Mapped[float] = mapped_column(Float, nullable=False)  # local ENU metres (east)
     y: Mapped[float] = mapped_column(Float, nullable=False)  # local ENU metres (north)
-    kind: Mapped[str] = mapped_column(String(16), default="crop")  # crop|dock|storage|path
+    kind: Mapped[str] = mapped_column(String(16), default="crop")  # crop|road|dock|storage|repair
+    bed_id: Mapped[str | None] = mapped_column(String(16), nullable=True)
     crop_type: Mapped[str | None] = mapped_column(String(24), nullable=True)
     state: Mapped[str] = mapped_column(String(16), default="fallow")  # fallow|seeded|growing|ripe|harvested
     weeds: Mapped[bool] = mapped_column(Boolean, default=False)

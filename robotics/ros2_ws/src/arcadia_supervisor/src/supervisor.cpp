@@ -9,6 +9,7 @@
 #include <chrono>
 #include <cmath>
 #include <memory>
+#include <random>
 #include <string>
 
 #include <nlohmann/json.hpp>
@@ -64,6 +65,7 @@ class ArcadiaSupervisor : public rclcpp::Node {
   arcadia::World world_;
   arcadia::GroundTruth truth_;
   double dt_ = 0.032, sim_t_ = 0;
+  std::mt19937 rng_{11};
   rclcpp::Publisher<Event>::SharedPtr pub_event_;
   rclcpp::Publisher<Command>::SharedPtr pub_cmd_;
   rclcpp::Subscription<Command>::SharedPtr sub_cmd_;
@@ -99,9 +101,33 @@ class ArcadiaSupervisor : public rclcpp::Node {
         sup_.step(int(dt_ * 1000));  // let the scene settle before controllers connect
         emit("world_loaded", "", "", "INFO", json{{"source", "webots"}, {"cells", world_.cells.size()}, {"farm_id", world_.farm_id}});
         broadcastIrradiance();
+        setOverviewCamera();
       } catch (const std::exception &e) {
         RCLCPP_ERROR(get_logger(), "world_load failed: %s", e.what());
       }
+      return;
+    }
+    if (c.kind == "set_view") {
+      try {
+        json p = json::parse(c.payload_json);
+        std::string follow = p.value("follow", "");
+        webots::Node *vp = sup_.getFromDef("VIEWPOINT");
+        if (vp) {
+          if (follow.empty()) { vp->getField("follow")->setSFString(""); setOverviewCamera(); }
+          else {
+            vp->getField("follow")->setSFString(follow);
+            vp->getField("followType")->setSFString(p.value("mode", "Mounted Shot") == "tracking" ? "Tracking Shot" : "Pan and Tilt Shot");
+            auto it = world_.robots.find(follow);
+            if (it != world_.robots.end() && it->second.node) {
+              const double *rp = it->second.node->getPosition();
+              const double pos[3] = {rp[0] - 9.0, rp[1] - 9.0, rp[2] + 6.0};
+              vp->getField("position")->setSFVec3f(pos);
+              const double ori[4] = {-0.35, 0.3, 0.89, 1.9};
+              vp->getField("orientation")->setSFRotation(ori);
+            }
+          }
+        }
+      } catch (...) {}
       return;
     }
     if (c.kind == "set_active") {
@@ -140,9 +166,23 @@ class ArcadiaSupervisor : public rclcpp::Node {
         if (tgt != world_.robots.end()) parkAtHome(tgt->second);
         it->second.towing.clear(); it->second.tow_attached = false;
       }
-    } else if (e.kind == "fault_cleared" && p.value("recharged", false)) {
+    } else if (e.kind == "fault_cleared") {
       auto it = world_.robots.find(e.robot_id);
-      if (it != world_.robots.end()) parkAtHome(it->second);
+      if (it != world_.robots.end()) {
+        it->second.pinned = false;
+        it->second.stuck_cooldown = 90.0;
+        if (p.value("recharged", false)) parkNear(it->second);
+      }
+    } else if (e.kind == "fault_detected" && p.value("fault", "") == "stuck_terrain") {
+      auto it = world_.robots.find(e.robot_id);
+      if (it != world_.robots.end() && it->second.node) {
+        const double *rp = it->second.node->getPosition();
+        const double *o = it->second.node->getOrientation();
+        it->second.pinned = true; it->second.pin_x = rp[0]; it->second.pin_y = rp[1]; it->second.pin_yaw = std::atan2(o[3], o[0]);
+      }
+    } else if (e.kind == "tow_attached") {
+      auto tgt = world_.robots.find(p.value("target", ""));
+      if (tgt != world_.robots.end()) tgt->second.pinned = false;  // the winch frees it
     }
   }
 
@@ -157,6 +197,63 @@ class ArcadiaSupervisor : public rclcpp::Node {
     const double rot[4] = {0, 0, 1, yaw};
     tgt->second.node->getField("rotation")->setSFRotation(rot);
     tgt->second.node->resetPhysics();
+  }
+
+  // Terrain entrapment: a ground vehicle moving through a waterlogged bed may get stuck.
+  void terrainHazard(arcadia::RobotRef &r) {
+    if (r.pinned || !r.active) return;
+    if (r.stuck_cooldown > 0) { r.stuck_cooldown -= dt_; return; }
+    const double *p = r.node->getPosition();
+    const double *v = r.node->getVelocity();
+    double speed = std::hypot(v[0], v[1]);
+    if (speed < 0.2) return;
+    double r2 = (world_.edge_m * 0.9) * (world_.edge_m * 0.9);
+    for (auto &[h3, c] : world_.cells) {
+      if (!c.waterlogged) continue;
+      double dx = c.x - p[0], dy = c.y - p[1];
+      if (dx * dx + dy * dy > r2) continue;
+      std::uniform_real_distribution<double> u(0.0, 1.0);
+      if (u(rng_) < 0.04 * dt_) {  // ~4 %/s inside a waterlogged bed
+        Command cmd;
+        cmd.command_id = "terrain"; cmd.robot_id = r.id; cmd.kind = "chaos";
+        cmd.payload_json = json{{"fault", "stuck_terrain"}, {"params", {{"terrain", "waterlogged bed"}, {"h3", h3}, {"wheel_slip", 0.85}}},
+                                {"source", "terrain"}}.dump();
+        pub_cmd_->publish(cmd);
+        r.stuck_cooldown = 30.0;
+      }
+      return;
+    }
+  }
+
+  void holdPinned(arcadia::RobotRef &r) {
+    const double tr[3] = {r.pin_x, r.pin_y, 0.25};
+    r.node->getField("translation")->setSFVec3f(tr);
+    const double rot[4] = {0, 0, 1, r.pin_yaw};
+    r.node->getField("rotation")->setSFRotation(rot);
+    r.node->resetPhysics();
+  }
+
+  // After a repair/recharge the unit stays where it was serviced if that is an infrastructure pad.
+  void parkNear(arcadia::RobotRef &r) {
+    if (!r.node) return;
+    const double *p = r.node->getPosition();
+    for (auto &[id, in] : world_.infra)
+      if (std::hypot(in.x - p[0], in.y - p[1]) < 8.0) { r.node->resetPhysics(); return; }
+    parkAtHome(r);
+  }
+
+  void setOverviewCamera() {
+    webots::Node *vp = sup_.getFromDef("VIEWPOINT");
+    if (!vp) return;
+    const auto &t = world_.config["terrain"];
+    double cx = (t.value("min_x", -150.0) + t.value("max_x", 150.0)) / 2.0;
+    double cy = (t.value("min_y", -150.0) + t.value("max_y", 150.0)) / 2.0;
+    double span = std::max(t.value("width", 300.0), t.value("height", 300.0));
+    const double pos[3] = {cx, cy - span * 0.75, span * 0.55};
+    vp->getField("position")->setSFVec3f(pos);
+    const double ori[4] = {1.0, 0.0, 0.0, 0.95};  // looking down-north over the farm
+    vp->getField("orientation")->setSFRotation(ori);
+    vp->getField("follow")->setSFString("");
   }
 
   void parkAtHome(arcadia::RobotRef &r) {

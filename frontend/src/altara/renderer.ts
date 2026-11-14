@@ -14,6 +14,7 @@ import { ROBOT_COLOR, STATUS_COLOR } from '../lib/types'
 export interface AltaraOptions {
   getSelected: () => string | null
   getHover: () => string | null
+  getSelection?: () => string[]
   onStats?: (fps: number) => void
 }
 
@@ -82,6 +83,7 @@ export class AltaraRenderer {
     const zoom = this.map.getZoom()
     const scale = Math.max(0.6, Math.min(1.6, (zoom - 13) / 4 + 0.8))
     const selected = this.opts.getSelected()
+    const selection = this.opts.getSelection?.() ?? (selected ? [selected] : [])
     const hover = this.opts.getHover()
     this.hitboxes = []
 
@@ -106,8 +108,12 @@ export class AltaraRenderer {
       this.drawTrail(r)
       const color = ROBOT_COLOR[r.type] ?? '#ffffff'
       const sColor = STATUS_COLOR[r.status] ?? '#a3b8aa'
-      const isSel = selected === r.id
+      const isSel = selected === r.id || selection.includes(r.id)
       const isHover = hover === r.id
+      if (selection.includes(r.id)) { // RTS selection bracket
+        ctx.strokeStyle = '#7ce38b'; ctx.lineWidth = 1.5; const s = (r.type === 'scout_uav' ? 11 : 12) * scale + 14
+        for (const [sx, sy] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) { ctx.beginPath(); ctx.moveTo(p.x + sx * s, p.y + sy * (s - 7)); ctx.lineTo(p.x + sx * s, p.y + sy * s); ctx.lineTo(p.x + sx * (s - 7), p.y + sy * s); ctx.stroke() }
+      }
       const base = (r.type === 'scout_uav' ? 11 : 12) * scale
 
       // shadow for UAV altitude

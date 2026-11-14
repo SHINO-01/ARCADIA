@@ -172,6 +172,8 @@ class ArcadiaRobot(Node):
             self.emit({"kind": "robot_power", "robot_id": self.robot_id, "payload": {"active": self.active}})
         elif msg.kind == "set_irradiance":
             self.irradiance = float(p.get("irradiance", 1.0))
+        elif msg.kind == "set_view":
+            pass  # handled by the supervisor
 
     # ------------------------------------------------------------------ helpers
     def position(self) -> tuple[float, float, float]:
@@ -192,6 +194,9 @@ class ArcadiaRobot(Node):
     # ------------------------------------------------------------------ control
     def drive_ugv(self, target: dict | None, pos, yaw) -> float:
         """Pure pursuit with LiDAR avoidance. Returns commanded linear speed."""
+        if self.b.fault and self.b.fault.kind == "stuck_terrain":
+            self.set_wheels(0.6, 0.0)  # wheels spin in the mud; the supervisor holds the chassis in place
+            return 0.0
         if target is None or self.b.immobilised:
             self.set_wheels(0.0, 0.0)
             return 0.0
@@ -201,7 +206,7 @@ class ArcadiaRobot(Node):
         # A tow approaches another robot: the winch attaches from ~2 m, and the target itself must
         # not be treated as an obstacle during the final approach.
         m = self.b.mission or {}
-        approaching_robot = m.get("kind") == "tow" and self.b.tow_phase == 0
+        approaching_robot = m.get("kind") == "tow" and self.b.tow_phase == 0 and self.b.wp_i >= self.b.pickup_index
         last_wp = self.b.wp_i == len(m.get("waypoints") or []) - 1
         parking = m.get("kind") in ("charge", "tow") and last_wp          # dock pads are 6 x 6 m
         reach = 3.0 if approaching_robot else 2.5 if parking else 0.8     # winch cable / pad / waypoint tolerance

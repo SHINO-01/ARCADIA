@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 
 from app.models import Farm, HexCell, Infrastructure, Mission, Robot
 from app.services.missions import boustrophedon, direct
+from app.services.routing import RoadNetwork
 
 log = logging.getLogger("arcadia.dispatch")
 
@@ -29,14 +30,27 @@ def _cell_dict(c: HexCell) -> dict:
     return {"h3": c.h3_index, "x": c.x, "y": c.y, "lat": c.lat, "lng": c.lng}
 
 
+def road_network(s: Session, farm_id: str) -> RoadNetwork:
+    rows = s.execute(select(HexCell.h3_index, HexCell.x, HexCell.y, HexCell.lat, HexCell.lng, HexCell.kind)
+                     .where(HexCell.farm_id == farm_id)).all()
+    return RoadNetwork([{"h3": r[0], "x": r[1], "y": r[2], "lat": r[3], "lng": r[4], "kind": r[5]} for r in rows])
+
+
+def ground_route(s: Session, farm_id: str, sx: float, sy: float, target: dict) -> list[dict]:
+    """Road-following waypoints for UGV/AGV missions."""
+    return [w.model_dump() for w in road_network(s, farm_id).route(sx, sy, target)]
+
+
 def plan_for_robot(s: Session, farm: Farm, robot: Robot, state: dict) -> Mission | None:
     """Return a new (unsaved) Mission for an idle robot, or None if nothing to do."""
     battery = float(state.get("battery_pct", robot.battery_pct or 100.0))
     home = s.execute(select(Infrastructure).where(Infrastructure.farm_id == farm.id,
                                                   Infrastructure.slug == (robot.home_dock or "dock-1"))).scalar_one_or_none()
+    rx, ry = float(state.get("x", robot.x or 0.0)), float(state.get("y", robot.y or 0.0))
     if battery < MIN_BATTERY and home is not None:
-        return Mission(farm_id=farm.id, robot_id=robot.id, kind="charge", source="auto", priority=0,
-                       waypoints=[direct({"x": home.x, "y": home.y, "h3": home.h3_index, "lat": home.lat, "lng": home.lng})[0].model_dump()],
+        tgt = {"x": home.x, "y": home.y, "h3": home.h3_index, "lat": home.lat, "lng": home.lng}
+        wps = [direct(tgt)[0].model_dump()] if robot.type == "scout_uav" else ground_route(s, farm.id, rx, ry, tgt)
+        return Mission(farm_id=farm.id, robot_id=robot.id, kind="charge", source="auto", priority=0, waypoints=wps,
                        payload={"dock": home.slug}, note="Battery below threshold; returning to microgrid dock")
 
     cells = s.execute(select(HexCell).where(HexCell.farm_id == farm.id, HexCell.kind == "crop")).scalars().all()
@@ -60,7 +74,6 @@ def plan_for_robot(s: Session, farm: Farm, robot: Robot, state: dict) -> Mission
                        note=f"Aerial survey of {len(batch)} hex cells")
 
     if robot.type in UGV_TYPES:
-        rx, ry = float(state.get("x", robot.x or 0.0)), float(state.get("y", robot.y or 0.0))
         tasks = ["harvest", "weed", "seed"] if UGV_MULTITOOL else [ROLE_TASK[robot.type]]
         for task in tasks:
             if task == "harvest":
@@ -74,6 +87,6 @@ def plan_for_robot(s: Session, farm: Farm, robot: Robot, state: dict) -> Mission
             tgt = min(cand, key=lambda c: (c.x - rx) ** 2 + (c.y - ry) ** 2)
             prio = {"harvest": 1, "weed": 2, "seed": 4}[task]
             return Mission(farm_id=farm.id, robot_id=robot.id, kind=task, source="auto", priority=prio, target_h3=tgt.h3_index,
-                           waypoints=[w.model_dump() for w in direct(_cell_dict(tgt))],
-                           payload={"crop": tgt.crop_type}, note=f"{task.title()} cell {tgt.h3_index} ({tgt.crop_type})")
+                           waypoints=ground_route(s, farm.id, rx, ry, _cell_dict(tgt)),
+                           payload={"crop": tgt.crop_type, "bed": tgt.bed_id}, note=f"{task.title()} {tgt.bed_id or 'cell'} · {tgt.crop_type}")
     return None

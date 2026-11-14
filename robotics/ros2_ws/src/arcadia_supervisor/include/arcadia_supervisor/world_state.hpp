@@ -27,6 +27,7 @@ struct Cell {
   double moisture = 0.5;
   double health = 1.0;
   double t_state = 0.0;
+  bool waterlogged = false;
   std::string observed_sig;
   webots::Node *node = nullptr;       // crop cylinder Solid
   webots::Node *weed_node = nullptr;  // weed marker (small red sphere), hidden when clean
@@ -38,6 +39,9 @@ struct RobotRef {
   webots::Node *node = nullptr;
   std::string towing;      // robot id this robot is towing (AGV only)
   bool tow_attached = false;
+  bool pinned = false;     // terrain entrapment: chassis held in place while wheels spin
+  double pin_x = 0, pin_y = 0, pin_yaw = 0;
+  double stuck_cooldown = 0; // seconds before this robot may get stuck again
 };
 
 struct Infra {

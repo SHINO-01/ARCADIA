@@ -119,10 +119,30 @@ void WorldSpawner::spawnCells(const json &cfg, World &world) {
     cell.y = c["y"].get<double>();
     cell.kind = c.value("kind", "crop");
     cell.moisture = c.value("moisture", 0.5);
+    cell.waterlogged = c.value("waterlogged", false);
+    if (cell.kind == "road") {
+      // travel road: flat grey hex-sized disc (cheap), slightly above the field plane
+      std::ostringstream rs;
+      rs << "Solid { translation " << f(cell.x) << " " << f(cell.y) << " 0.012 name \"road_" << cell.h3
+         << "\" children [ Shape { appearance PBRAppearance { baseColor 0.55 0.53 0.5 roughness 1 metalness 0 } geometry Cylinder { radius "
+         << f(edge * 0.95) << " height 0.012 subdivision 6 } } ] }";
+      ch->importMFNodeFromString(-1, rs.str());
+      cell.state = CropState::Infra;
+      world.cells[cell.h3] = cell;
+      continue;
+    }
     if (cell.kind != "crop") {
       cell.state = CropState::Infra;
       world.cells[cell.h3] = cell;
       continue;
+    }
+    if (cell.waterlogged) {
+      // puddle marker so operators can see the hazard in the 3D view
+      std::ostringstream ws;
+      ws << "Solid { translation " << f(cell.x) << " " << f(cell.y) << " 0.01 name \"water_" << cell.h3
+         << "\" children [ Shape { appearance PBRAppearance { baseColor 0.2 0.35 0.55 roughness 0.1 metalness 0.3 transparency 0.25 } geometry Cylinder { radius "
+         << f(edge * 0.8) << " height 0.01 subdivision 8 } } ] }";
+      ch->importMFNodeFromString(-1, ws.str());
     }
     cell.crop = c.value("crop", "wheat");
     cell.crop_height = c.value("crop_height", 0.8);
@@ -193,6 +213,12 @@ void WorldSpawner::spawnInfra(const json &cfg, World &world) {
         double a = b * 2.0943951;
         s << " Pose { translation -2.55 0 8.1 rotation 1 0 0 " << f(a) << " children [ Pose { translation 0 0 1.5 children [ Shape { appearance PBRAppearance { baseColor 0.95 0.95 0.97 } geometry Box { size 0.08 0.3 3.0 } } ] } ] }";
       }
+    } else if (in.kind == "repair_station") {
+      // repair bay: open-sided canopy on four posts, tool bench, orange trim
+      s << " Pose { translation 0 0 3.2 children [ Shape { appearance PBRAppearance { baseColor 0.95 0.55 0.2 roughness 0.6 } geometry Box { size 7 6 0.2 } } ] }";
+      for (double px : {-3.2, 3.2}) for (double py : {-2.7, 2.7})
+        s << " Pose { translation " << f(px) << " " << f(py) << " 1.6 children [ Shape { appearance PBRAppearance { baseColor 0.3 0.3 0.32 metalness 0.8 } geometry Cylinder { radius 0.12 height 3.2 } } ] }";
+      s << " Pose { translation -2.6 0 0.5 children [ Shape { appearance PBRAppearance { baseColor 0.25 0.25 0.27 roughness 0.9 } geometry Box { size 0.8 4 0.9 } } ] }";
     } else {
       // robot storage facility / silo
       s << " Pose { translation 0 0 1.6 children [ Shape { appearance PBRAppearance { baseColor 0.55 0.5 0.7 roughness 0.7 } geometry Box { size 7 5 3.2 } } ] }";

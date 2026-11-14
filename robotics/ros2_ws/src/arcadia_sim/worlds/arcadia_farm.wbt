@@ -19,10 +19,11 @@ WorldInfo {
     ContactProperties { material1 "default" material2 "default" coulombFriction [ 1.2 ] softCFM 0.001 }
   ]
 }
-Viewpoint {
-  orientation -0.28 0.25 0.93 1.75
-  position 40 -90 60
+DEF VIEWPOINT Viewpoint {
+  orientation 1 0 0 0.95
+  position 0 -220 160
   follow ""
+  followType "Pan and Tilt Shot"
 }
 TexturedBackground { texture "noon_cloudy_countryside" }
 TexturedBackgroundLight { texture "noon_cloudy_countryside" castShadows FALSE }
