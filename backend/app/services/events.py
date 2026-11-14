@@ -60,7 +60,10 @@ async def handle_event(evt: SimEvent, farm_id: str | None) -> None:
         elif kind == "world_loaded":
             log.info("Simulation loaded world for farm %s (%s)", farm_id, evt.payload)
         elif kind == "robot_power":
-            await fleet.update_robot(evt.robot_id or "", active=bool(evt.payload.get("active", True)))
+            active = bool(evt.payload.get("active", True))
+            await fleet.update_robot(evt.robot_id or "", active=active, status="idle" if active else "offline")
+            async with session_scope() as s:
+                await s.execute(update(Robot).where(Robot.id == evt.robot_id).values(active=active, status="idle" if active else "offline"))
         elif kind == "robot_online":
             await _robot_online(evt)
     except Exception:  # never let one bad event kill the bridge loop
