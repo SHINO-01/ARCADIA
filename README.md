@@ -73,6 +73,7 @@ cd frontend && npm run dev        # Vite :5173 proxies /api and /ws to :8000
 ## Verified end to end (2026-11-14, IdeaPad Slim 3)
 - Headless twin: farm → H3 grid → K-Means plan → activate → automated survey/seed/weed missions, TimescaleDB telemetry, chaos faults, AGV tow recovery. `make backend-test` passes.
 - Native stack: Webots R2025a (tarball) + ROS 2 Lyrical — supervisor spawns the farm from the backend world config, three extern controllers attach, 50 Hz odometry throttled to 5 Hz `/arcadia/telemetry`, `diagnostic_aggregator` roll-ups, rosbridge ↔ FastAPI hot-swap (the backend switches from headless twin to ROS automatically), dashboard embeds the W3D stream.
+- Energy autonomy in the physics sim: torque-coupled drain (wheel torque × angular velocity), passive solar skins fed by the supervisor's irradiance broadcast, and a 22% reserve reflex — the Scout UAV abandoned a survey at 22%, flew to dock-1 and charged, without the backend's help.
 - Chaos → recovery in the physics sim: `motor_jam` injected into the Seeder UGV → `fault_detected` → interruptive modal → Logistics AGV powers up in storage, drives ~70 m (pure-pursuit + LiDAR), winches the UGV (supervisor drags it), parks it on the dock pad, fault cleared + recharge, incident resolved in 76 s, AGV powers back down.
 
 ## Design notes / limits
