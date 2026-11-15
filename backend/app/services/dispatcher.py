@@ -41,17 +41,45 @@ def ground_route(s: Session, farm_id: str, sx: float, sy: float, target: dict) -
     return [w.model_dump() for w in road_network(s, farm_id).route(sx, sy, target)]
 
 
+# Battery percent consumed per metre at cruise (compressed sim time), used for range checks.
+PCT_PER_M = {"scout_uav": 0.04, "logistics_agv": 0.02}  # calibrated from the drain models (+~20%)
+DEFAULT_PCT_PER_M = 0.045
+
+
+def _path_len(x: float, y: float, wps: list[dict]) -> float:
+    pts = [(x, y)] + [(w["x"], w["y"]) for w in wps]
+    return sum(((pts[i + 1][0] - pts[i][0]) ** 2 + (pts[i + 1][1] - pts[i][1]) ** 2) ** 0.5 for i in range(len(pts) - 1))
+
+
+def nearest_dock(s: Session, farm_id: str, robot_type: str, x: float, y: float) -> tuple[Infrastructure, list[dict], float] | None:
+    """Charging dock with the shortest *travel* distance (roads for ground units, straight for UAVs)."""
+    docks = s.execute(select(Infrastructure).where(Infrastructure.farm_id == farm_id, Infrastructure.kind.like("%dock"))).scalars().all()
+    if not docks:
+        return None
+    net = road_network(s, farm_id) if robot_type != "scout_uav" else None
+    best = None
+    for d in docks:
+        tgt = {"x": d.x, "y": d.y, "h3": d.h3_index, "lat": d.lat, "lng": d.lng}
+        wps = [direct(tgt)[0].model_dump()] if net is None else [w.model_dump() for w in net.route(x, y, tgt)]
+        length = _path_len(x, y, wps)
+        if best is None or length < best[2]:
+            best = (d, wps, length)
+    return best
+
+
 def plan_for_robot(s: Session, farm: Farm, robot: Robot, state: dict) -> Mission | None:
     """Return a new (unsaved) Mission for an idle robot, or None if nothing to do."""
     battery = float(state.get("battery_pct", robot.battery_pct or 100.0))
-    home = s.execute(select(Infrastructure).where(Infrastructure.farm_id == farm.id,
-                                                  Infrastructure.slug == (robot.home_dock or "dock-1"))).scalar_one_or_none()
     rx, ry = float(state.get("x", robot.x or 0.0)), float(state.get("y", robot.y or 0.0))
-    if battery < MIN_BATTERY and home is not None:
-        tgt = {"x": home.x, "y": home.y, "h3": home.h3_index, "lat": home.lat, "lng": home.lng}
-        wps = [direct(tgt)[0].model_dump()] if robot.type == "scout_uav" else ground_route(s, farm.id, rx, ry, tgt)
-        return Mission(farm_id=farm.id, robot_id=robot.id, kind="charge", source="auto", priority=0, waypoints=wps,
-                       payload={"dock": home.slug}, note="Battery below threshold; returning to microgrid dock")
+    dock = nearest_dock(s, farm.id, robot.type, rx, ry)
+    if dock is not None:
+        d, wps, length = dock
+        needed = length * PCT_PER_M.get(robot.type, DEFAULT_PCT_PER_M)
+        # Go charge when below the floor, or when the trip to the nearest dock would eat the reserve.
+        if battery < MIN_BATTERY or battery < needed * 1.5 + 12.0:
+            return Mission(farm_id=farm.id, robot_id=robot.id, kind="charge", source="auto", priority=0, waypoints=wps,
+                           payload={"dock": d.slug, "distance_m": round(length)},
+                           note=f"Battery {battery:.0f}% · nearest dock {d.slug} ({length:.0f} m)")
 
     cells = s.execute(select(HexCell).where(HexCell.farm_id == farm.id, HexCell.kind == "crop")).scalars().all()
     if not cells:

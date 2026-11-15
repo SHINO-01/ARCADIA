@@ -5,9 +5,11 @@ const BASE = '/api'
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(BASE + path, { headers: { 'Content-Type': 'application/json' }, ...init })
   if (!res.ok) {
-    let detail = res.statusText
+    let detail: unknown = res.statusText
     try { detail = (await res.json()).detail ?? detail } catch { /* ignore */ }
-    throw new Error(typeof detail === 'string' ? detail : JSON.stringify(detail))
+    // FastAPI validation errors arrive as a list of {loc, msg}; show them as one readable line
+    if (Array.isArray(detail)) detail = detail.slice(0, 3).map((d: { loc?: unknown[]; msg?: string }) => `${(d.loc ?? []).slice(1).join('.')}: ${d.msg}`).join(' · ')
+    throw new Error(typeof detail === 'string' ? detail : `Request failed (${res.status})`)
   }
   if (res.status === 204) return undefined as T
   return res.json() as Promise<T>

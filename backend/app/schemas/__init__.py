@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 # ----------------------------------------------------------------------------- wire protocol
 FaultKind = Literal["motor_jam", "battery_drop", "network_latency", "sensor_glitch", "stuck_terrain"]
@@ -89,9 +89,23 @@ class PlanRequest(BaseModel):
     shuffle_crops: bool = False
 
 
+class RoutePoint(BaseModel):
+    """A map click: geographic (lat/lng) or local ENU (x/y) - at least one pair is required."""
+    lat: float | None = None
+    lng: float | None = None
+    x: float | None = None
+    y: float | None = None
+
+    @model_validator(mode="after")
+    def _one_pair(self):
+        if (self.lat is None or self.lng is None) and (self.x is None or self.y is None):
+            raise ValueError("each waypoint needs lat/lng or x/y")
+        return self
+
+
 class RouteRequest(BaseModel):
     """Operator-built route (RTS style): ordered waypoints, optionally looped as a patrol."""
-    waypoints: list[Waypoint] = Field(min_length=1, max_length=64)
+    waypoints: list[RoutePoint] = Field(min_length=1, max_length=64)
     loop: bool = False
     kind: Literal["patrol", "goto", "survey"] = "patrol"
     note: str | None = None

@@ -13,7 +13,7 @@ from app.services.h3_engine import CROP_HEIGHT_M, HexGrid
 from app.services.planner import PlanReport
 
 ROBOT_CATALOG = {
-    "scout_uav": {"name": "Scout UAV", "role": "aerial_survey", "max_speed": 6.0, "battery_wh": 520,
+    "scout_uav": {"name": "Scout UAV", "role": "aerial_survey", "max_speed": 6.0, "battery_wh": 900,
                   "cruise_alt": 6.0, "sensor_radius_m": 9.0, "mass_kg": 2.4, "solar_skin_w": 12},
     "seeder_ugv": {"name": "Seeder UGV", "role": "seeding", "max_speed": 1.4, "battery_wh": 2400,
                    "cruise_alt": 0.0, "sensor_radius_m": 2.0, "mass_kg": 180, "solar_skin_w": 0},

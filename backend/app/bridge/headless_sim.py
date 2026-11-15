@@ -364,7 +364,7 @@ class HeadlessTwin:
         r.speed = v
         r.odometer += v * dt
         # torque-coupled drain (compressed timeline so a mission visibly costs energy)
-        drain_w = idle_w + (380.0 if r.is_uav else 900.0) * (v / vmax) ** 1.3
+        drain_w = idle_w + (380.0 if r.is_uav else 330.0) * (v / vmax) ** 1.3  # mirrors the Webots controller
         r.battery_pct = max(0.0, r.battery_pct - dt * drain_w / wh * 100 / 3600 * TIME_COMPRESSION)
         r.motor_temp = min(85.0, r.motor_temp + dt * 0.9 * (v / vmax)) if v > 0 else max(34.0, r.motor_temp - dt * 0.6)
         r.cpu = 0.3 + 0.2 * (v / vmax)

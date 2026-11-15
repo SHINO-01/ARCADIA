@@ -139,17 +139,24 @@ async def return_home(robot_id: str, s: AsyncSession = Depends(get_session)):
     robot = await s.get(Robot, robot_id)
     if robot is None or not robot.farm_id:
         raise HTTPException(404, "robot not found")
-    home = (await s.execute(select(Infrastructure).where(Infrastructure.farm_id == robot.farm_id,
-                                                         Infrastructure.slug == (robot.home_dock or "dock-1")))).scalar_one_or_none()
-    if home is None:
-        raise HTTPException(409, "robot has no home dock")
+    live = await fleet.get_robot(robot_id) or {}
+    rx, ry = float(live.get("x", robot.x or 0.0)), float(live.get("y", robot.y or 0.0))
+    from app.core.db import sync_session
+    from app.services.dispatcher import nearest_dock
+    import asyncio
+    def _pick():
+        with sync_session() as ss:
+            return nearest_dock(ss, robot.farm_id, robot.type, rx, ry)
+    picked = await asyncio.get_running_loop().run_in_executor(None, _pick)
+    if picked is None:
+        raise HTTPException(409, "farm has no charging dock")
+    home, route_wps, _length = picked
     for m in (await s.execute(select(Mission).where(Mission.robot_id == robot_id,
                                                     Mission.status.in_(("queued", "dispatched", "running"))))).scalars():
         m.status = "cancelled"
     await fleet.send_command(Command(kind="cancel", robot_id=robot_id))
     m = Mission(farm_id=robot.farm_id, robot_id=robot_id, kind="charge", source="operator", priority=0,
-                waypoints=[{"x": home.x, "y": home.y, "z": 0.0, "h3": home.h3_index, "lat": home.lat, "lng": home.lng}],
-                payload={"dock": home.slug}, note="Operator recall to dock")
+                waypoints=route_wps, payload={"dock": home.slug}, note=f"Operator recall to nearest dock {home.slug}")
     s.add(m)
     await s.commit()
     await s.refresh(m)

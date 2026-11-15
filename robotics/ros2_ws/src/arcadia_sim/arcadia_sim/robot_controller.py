@@ -35,7 +35,7 @@ from arcadia_msgs.msg import Battery, Command, Event, State  # noqa: E402
 from arcadia_sim.behaviour import BatteryModel, Behaviour  # noqa: E402
 
 SPECS = {
-    "scout_uav": {"max_speed": 6.0, "battery_wh": 520, "idle_w": 25, "solar_skin_w": 12, "cruise_alt": 6.0, "sensor_radius_m": 9.0, "v": 22.2},
+    "scout_uav": {"max_speed": 6.0, "battery_wh": 900, "idle_w": 25, "solar_skin_w": 12, "cruise_alt": 6.0, "sensor_radius_m": 9.0, "v": 22.2},
     "seeder_ugv": {"max_speed": 1.4, "battery_wh": 2400, "idle_w": 60, "solar_skin_w": 0, "cruise_alt": 0.0, "sensor_radius_m": 2.0, "v": 48.0},
     "cropcare_ugv": {"max_speed": 1.8, "battery_wh": 1200, "idle_w": 50, "solar_skin_w": 40, "cruise_alt": 0.0, "sensor_radius_m": 1.5, "v": 48.0},
     "harvester_ugv": {"max_speed": 1.0, "battery_wh": 3200, "idle_w": 70, "solar_skin_w": 0, "cruise_alt": 0.0, "sensor_radius_m": 1.2, "v": 48.0},
@@ -64,6 +64,7 @@ class ArcadiaRobot(Node):
         self.is_uav = self.robot_type == "scout_uav"
         self.active = not name.startswith("agv")  # the AGV boots powered-down (hardware cap)
         self.home_xy: tuple[float, float] | None = None
+        self.docks: list[tuple[float, float]] = []
         self.irradiance = 1.0
 
         self.b = Behaviour(name, self.robot_type, self.spec,
@@ -126,6 +127,7 @@ class ArcadiaRobot(Node):
             try:
                 world = json.loads(msg.payload_json).get("world") or {}
                 me = next((r for r in world.get("robots", []) if r["id"] == self.robot_id), None)
+                self.docks = [(i["x"], i["y"]) for i in world.get("infrastructure", []) if str(i.get("kind", "")).endswith("dock")]
                 if me:
                     home = next((i for i in world.get("infrastructure", []) if i["id"] == me.get("home")), None)
                     if home:
@@ -306,7 +308,11 @@ class ArcadiaRobot(Node):
                     self.publish_diag(pos, 0.0)
                 self.b.sim_time += self.dt
                 continue
-            self.b.low_battery_rth(self.home_xy)
+            if self.docks:  # reflex heads for the NEAREST charging dock, not necessarily home
+                nearest = min(self.docks, key=lambda d: (d[0] - pos[0]) ** 2 + (d[1] - pos[1]) ** 2)
+                self.b.low_battery_rth(nearest)
+            else:
+                self.b.low_battery_rth(self.home_xy)
             target = self.b.tick(self.dt, pos, self.irradiance)
             speed = self.fly_uav(target, pos) if self.is_uav else self.drive_ugv(target, pos, yaw)
             # torque-coupled battery drain: mechanical power = sum(|torque_i * omega_i|) at the wheels,
@@ -318,8 +324,9 @@ class ArcadiaRobot(Node):
             else:
                 # Skid-steer wheel scrub inflates torque feedback (all four wheels are fixed), so the
                 # mechanical term is scaled to a realistic drivetrain draw and clamped.
+                # Rolling resistance of a ~180 kg rover at 1.4 m/s is ~250 W; turning scrub adds more.
                 mech_w = sum(abs(m.getTorqueFeedback()) * abs(m.getVelocity()) for m in self.motors)
-                torque_w = min(mech_w * 0.3, 1500.0) + 150.0 * (speed / self.spec["max_speed"])
+                torque_w = min(mech_w * 0.12, 450.0) + 120.0 * (speed / self.spec["max_speed"])
             if self.b.status != "charging":
                 self.b.battery.step(self.dt, torque_w, self.irradiance)
             self.b.motor_temp = min(88.0, self.b.motor_temp + self.dt * 0.9 * (speed / self.spec["max_speed"])) if speed > 0.05 \
