@@ -2,6 +2,8 @@
 name: arcadia
 
 x-backend: &backend
+  # api, worker and beat share ONE image so a rebuild can never leave Celery on stale code
+  image: arcadia-backend:latest
   build: ./backend
   env_file: .env
   environment:

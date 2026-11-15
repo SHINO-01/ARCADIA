@@ -130,8 +130,11 @@ class ArcadiaRobot(Node):
                     home = next((i for i in world.get("infrastructure", []) if i["id"] == me.get("home")), None)
                     if home:
                         self.home_xy = (home["x"], home["y"])
-                    self.active = bool(me.get("active", True))
-                    self.b.status = "idle" if self.active else "offline"
+                    # A world (re)broadcast must never wipe live state: only an idle/offline, healthy
+                    # unit takes the power flag from the world config.
+                    if self.b.fault is None and self.b.mission is None and self.b.status in ("idle", "offline"):
+                        self.active = bool(me.get("active", True))
+                        self.b.status = "idle" if self.active else "offline"
             except json.JSONDecodeError:
                 pass
             return
@@ -195,7 +198,9 @@ class ArcadiaRobot(Node):
     def drive_ugv(self, target: dict | None, pos, yaw) -> float:
         """Pure pursuit with LiDAR avoidance. Returns commanded linear speed."""
         if self.b.fault and self.b.fault.kind == "stuck_terrain":
-            self.set_wheels(0.6, 0.0)  # wheels spin in the mud; the supervisor holds the chassis in place
+            # Bogged down: no traction. Wheels are stopped (a spinning wheel on rigid-body physics
+            # would just drive away); the supervisor also pins the chassis until the winch frees it.
+            self.set_wheels(0.0, 0.0)
             return 0.0
         if target is None or self.b.immobilised:
             self.set_wheels(0.0, 0.0)

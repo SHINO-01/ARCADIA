@@ -278,15 +278,36 @@ def plan_infrastructure(grid: HexGrid, k_docks: int | None = None, k_storage: in
         beds[key].cells.append(c.h3)
         c.crop_type = beds[key].crop
         crop_cells += 1
-    for b in beds.values():
-        xs = [by_h3[h].x for h in b.cells]
-        ys = [by_h3[h].y for h in b.cells]
-        b.centroid_x, b.centroid_y = round(float(np.mean(xs)), 2), round(float(np.mean(ys)), 2)
+    def _centroids() -> None:
+        for b in beds.values():
+            b.centroid_x = round(float(np.mean([by_h3[h].x for h in b.cells])), 2)
+            b.centroid_y = round(float(np.mean([by_h3[h].y for h in b.cells])), 2)
+
+    # Slivers at the field edge are not workable beds: fold any bed smaller than min_cells into
+    # the nearest larger bed (it inherits that bed's crop), then re-letter A, B, C... in order.
+    _centroids()
+    min_cells = max(6, bed_width * 4)
+    while len(beds) > 1:
+        small = min(beds.items(), key=lambda kv: len(kv[1].cells))
+        if len(small[1].cells) >= min_cells:
+            break
+        key, b = small
+        others = [(k, o) for k, o in beds.items() if k != key]
+        tgt_key, tgt = min(others, key=lambda kv: (kv[1].centroid_x - b.centroid_x) ** 2 + (kv[1].centroid_y - b.centroid_y) ** 2)
+        tgt.cells.extend(b.cells)
+        del beds[key]
+        _centroids()
+    ordered = sorted(beds.values(), key=lambda b: (-b.centroid_y, b.centroid_x))  # north-west first
+    for idx, b in enumerate(ordered):
+        letter = chr(ord("A") + idx % 26) + (str(idx // 26 + 1) if idx >= 26 else "")
+        b.id = f"bed-{letter}"
+        for h in b.cells:
+            by_h3[h].crop_type = b.crop
     # mark kinds on the specs so the world builder / DB see them
     for c in cells:
         if c.h3 in road:
             c.kind = "road"
-    bed_list = sorted(beds.values(), key=lambda b: b.id)
+    bed_list = sorted(beds.values(), key=lambda b: (len(b.id), b.id))
 
     dmin = np.linalg.norm(pts[:, None, :] - dock_pts[None, :, :], axis=2).min(axis=1)
     return PlanReport(

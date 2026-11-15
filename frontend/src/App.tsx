@@ -28,7 +28,12 @@ export default function App() {
       if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return
       if (e.key === 'Escape') { if (dispatchArm) armDispatch(null); else if (route.length) clearRoute(); else select([]) }
       const views = { '1': 'plan', '2': 'ops', '3': 'twin', '4': 'alerts', '5': 'analytics' } as const
-      if (e.key in views) { const v = views[e.key as keyof typeof views]; if (v === 'plan' || farm?.status === 'active') setView(v) }
+      if (e.key in views) {
+        const v = views[e.key as keyof typeof views]
+        const live = useUI.getState().farms.find((f) => f.status === 'active')
+        if (v === 'plan') setView(v)
+        else if (live) { if (farm?.id !== live.id) useUI.getState().setFarm(live); setView(v) }
+      }
       if (selected.length && view === 'ops') {
         if (e.key === 's' || e.key === 'S') Promise.all(selected.map(api.stop)).then(() => notify('Stop', 'ok'))
         if (e.key === 'h' || e.key === 'H') Promise.all(selected.map(api.returnHome)).then(() => notify('Return to dock', 'ok'))

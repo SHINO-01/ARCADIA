@@ -2,14 +2,14 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_farm_or_404
 from app.bridge.manager import bridge
 from app.core.db import get_session
 from app.core.redis import get_redis
-from app.models import Farm, HexCell, Infrastructure, Robot
+from app.models import Farm, HexCell, Incident, Infrastructure, Mission, Robot
 from app.schemas import FarmCreate, FarmOut, InfrastructureOut, PlanRequest
 from app.services import fleet
 from app.services.h3_engine import HexGrid, build_hexgrid, hexgrid_feature_collection
@@ -176,8 +176,15 @@ async def activate_farm(farm_id: str, s: AsyncSession = Depends(get_session)):
         p = (await s.execute(select(Farm).where(Farm.id == prev))).scalar_one_or_none()
         if p:
             p.status = "planned"
-    # (Re)provision robots from the world config
-    await s.execute(delete(Robot).where(Robot.farm_id == farm_id))
+    # (Re)provision robots from the world config. Robot ids are fleet-wide (uav-1, ugv-1, agv-1):
+    # the physical fleet moves to whichever farm is live, so drop any rows that still bind these
+    # ids to another farm, and in-flight work there, before re-creating them here.
+    ids = [r["id"] for r in farm.world_config["robots"]]
+    await s.execute(update(Mission).where(Mission.robot_id.in_(ids), Mission.status.in_(("queued", "dispatched", "running")))
+                    .values(status="cancelled", note="fleet moved to another farm"))
+    await s.execute(update(Incident).where(Incident.robot_id.in_(ids), Incident.state.in_(("open", "acknowledged", "recovering")))
+                    .values(state="resolved"))
+    await s.execute(delete(Robot).where(or_(Robot.farm_id == farm_id, Robot.id.in_(ids))))
     robots_state = []
     for r in farm.world_config["robots"]:
         lat, lng = bridge_origin_latlng(farm, r["x"], r["y"])

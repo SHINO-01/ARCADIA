@@ -50,10 +50,13 @@ class HexGrid:
 def choose_resolution(area_m2: float, target_cells: int | None = None) -> int:
     """Pick the H3 resolution whose average hexagon count best matches target_cells."""
     target = target_cells or settings.h3_target_cells
+    # Compare on a log scale: each resolution step changes the cell count ~7x, so a linear error
+    # unfairly favours the coarser grid (e.g. 88 cells beat 620 for a 320 target).
+    import math
     best_res, best_err = settings.h3_min_resolution, float("inf")
     for res in range(settings.h3_min_resolution, settings.h3_max_resolution + 1):
         n = area_m2 / h3.average_hexagon_area(res, unit="m^2")
-        err = abs(n - target) / target
+        err = abs(math.log(max(n, 1e-9) / target))
         if err < best_err:
             best_res, best_err = res, err
     return best_res

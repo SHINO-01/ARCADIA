@@ -181,6 +181,7 @@ class ArcadiaSupervisor : public rclcpp::Node {
         const double *rp = it->second.node->getPosition();
         const double *o = it->second.node->getOrientation();
         it->second.pinned = true; it->second.pin_x = rp[0]; it->second.pin_y = rp[1]; it->second.pin_yaw = std::atan2(o[3], o[0]);
+        RCLCPP_INFO(get_logger(), "%s bogged down at (%.1f, %.1f) - chassis pinned until towed", e.robot_id.c_str(), rp[0], rp[1]);
       }
     } else if (e.kind == "tow_attached") {
       auto tgt = world_.robots.find(p.value("target", ""));

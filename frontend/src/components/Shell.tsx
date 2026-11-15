@@ -14,9 +14,12 @@ const VIEWS: { id: View; label: string; icon: typeof MapIcon; key: string }[] = 
 ]
 
 export function NavRail() {
-  const { view, setView, farm } = useUI()
+  const { view, setView, farms, farm, setFarm } = useUI()
   const incidents = useLive((s) => s.incidents.filter((i) => i.state !== 'resolved').length)
-  const disabled = (v: View) => v !== 'plan' && farm?.status !== 'active'
+  const live = farms.find((f) => f.status === 'active') ?? (farm?.status === 'active' ? farm : null)
+  const disabled = (v: View) => v !== 'plan' && !live
+  // Operational views always show the live twin, even if a draft farm is open in the planner.
+  const go = (v: View) => { if (v !== 'plan' && live && farm?.id !== live.id) setFarm(live); setView(v) }
   return (
     <nav className="flex w-[72px] shrink-0 flex-col items-center border-r border-line bg-panel py-3">
       <div className="mb-4 flex flex-col items-center gap-1">
@@ -24,7 +27,7 @@ export function NavRail() {
         <span className="text-[9px] font-bold tracking-[0.22em]">ARCADIA</span>
       </div>
       {VIEWS.map(({ id, label, icon: Icon, key }) => (
-        <button key={id} onClick={() => setView(id)} disabled={disabled(id)} title={`${label} (${key})`}
+        <button key={id} onClick={() => go(id)} disabled={disabled(id)} title={`${label} (${key})`}
           className={clsx('relative mb-1 flex w-16 flex-col items-center gap-1 rounded-lg px-1 py-2 text-[10px] transition-colors disabled:opacity-30',
             view === id ? 'bg-leaf-2/15 text-leaf' : 'text-fg-3 hover:bg-line hover:text-fg')}>
           <Icon size={18} />{label}

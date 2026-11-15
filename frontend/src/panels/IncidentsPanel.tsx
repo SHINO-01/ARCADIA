@@ -63,10 +63,27 @@ export function IncidentModal() {
   const inc = useLive((s) => s.pendingModal)
   const dismiss = useLive((s) => s.dismissModal)
   const notify = useUI((s) => s.notify)
+  const view = useUI((s) => s.view)
+  const setView = useUI((s) => s.setView)
   if (!inc) return null
+  // While planning (drawing boundaries, tuning layouts) alerts must not steal the pointer:
+  // show a non-blocking card that jumps to the Alerts view instead of the interruptive modal.
+  if (view === 'plan') {
+    return (
+      <div className="anim-slide-up absolute right-4 top-14 z-50 w-[320px] rounded-lg border border-alert/60 bg-panel p-3 shadow-2xl">
+        <div className="flex items-center gap-2 text-[10px] uppercase tracking-[0.14em] text-alert"><AlertTriangle size={12} />Chaos engine · {inc.severity}</div>
+        <div className="mt-1 text-sm font-semibold">{inc.title}</div>
+        <div className="mono mt-0.5 text-[11px] text-fg-3">{inc.robot_id} · {inc.kind}{inc.requires_tow ? ' · tow required' : ''}</div>
+        <div className="mt-2 flex justify-end gap-1.5">
+          <button className="btn" onClick={dismiss}>Later</button>
+          <button className="btn btn-primary" onClick={() => { dismiss(); setView('alerts') }}>Open alerts</button>
+        </div>
+      </div>
+    )
+  }
   const act = async (recover: boolean) => {
     try {
-      if (recover) { await api.recoverIncident(inc.id); notify(inc.requires_tow ? 'Logistics AGV dispatched — tow recovery in progress' : 'Remote reset issued', 'ok') }
+      if (recover) { await api.recoverIncident(inc.id); notify(inc.requires_tow ? 'Logistics AGV dispatched — towing to the Repair Station' : 'Remote reset issued', 'ok') }
       else await api.ackIncident(inc.id)
     } catch (e) { notify((e as Error).message, 'err') }
     dismiss()
@@ -88,7 +105,7 @@ export function IncidentModal() {
         </div>
         <p className="mt-3 text-xs text-fg-2">
           {inc.requires_tow
-            ? 'The unit is stranded in the field. Dispatch the Logistics AGV to winch it back to its Renewable Charging Dock for repair and recharge.'
+            ? 'The unit is stranded in the field. Dispatch the Logistics AGV: it drives the travel roads to the unit, winches it, and delivers it to the Repair Station for repair and recharge.'
             : 'The unit is degraded but mobile. A remote subsystem reset will clear the fault without a tow.'}
         </p>
         <div className="mt-4 flex justify-end gap-2">

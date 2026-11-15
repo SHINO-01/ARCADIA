@@ -14,13 +14,17 @@ export function PlanningPanel({ drawn, onStartDraw, onClearDraw }: { drawn: { fe
   const [params, setParams] = useState<PlanParams>({ road_spacing: 6, bed_width: 3, orientation: 'ew', shuffle_crops: false, k_docks: null })
   const [busy, setBusy] = useState<string | null>(null)
 
-  const refreshFarms = () => api.farms().then((fs) => { setFarms(fs); if (!farm) { const active = fs.find((f) => f.status === 'active'); if (active) { setFarm(active); setMode('plan') } } }).catch(() => {})
-  useEffect(() => { refreshFarms() }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  // On first load, jump to the active farm; later refreshes never override what the user selected.
+  const refreshFarms = (autoSelect = false) => api.farms().then((fs) => {
+    setFarms(fs)
+    if (autoSelect && !useUI.getState().farm) { const active = fs.find((f) => f.status === 'active'); if (active) { setFarm(active); setMode('plan') } }
+  }).catch(() => {})
+  useEffect(() => { refreshFarms(true) }, []) // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { if (farm?.plan) setParams((p) => ({ ...p, road_spacing: farm.plan!.road_spacing, bed_width: farm.plan!.bed_width, orientation: farm.plan!.orientation })) }, [farm?.id]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const run = async (label: string, fn: () => Promise<Farm | void>) => {
     setBusy(label)
-    try { const f = await fn(); if (f) setFarm(f); await refreshFarms() } catch (e) { notify((e as Error).message, 'err') } finally { setBusy(null) }
+    try { const f = await fn(); if (f) setFarm(f); await refreshFarms(false) } catch (e) { notify((e as Error).message, 'err') } finally { setBusy(null) }
   }
   const create = () => drawn && run('tessellating', async () => { const f = await api.createFarm({ name, boundary: drawn.feature, target_cells: targetCells }); notify(`${f.cell_count} H3 cells at resolution ${f.h3_resolution}`, 'ok'); setMode('plan'); onClearDraw(); return f })
   const plan = (extra: Partial<PlanParams> = {}) => farm && run('clustering', async () => { const p = { ...params, ...extra }; setParams(p); const f = await api.plan(farm.id, p); notify(`${f.plan?.k_docks} docks · ${f.plan?.road_cells ?? 0} road cells · ${(f.plan?.beds ?? []).length} beds`, 'ok'); return f })
