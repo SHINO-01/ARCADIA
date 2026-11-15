@@ -216,11 +216,16 @@ def plan_infrastructure(grid: HexGrid, k_docks: int | None = None, k_storage: in
     for c in cells:
         if (ij[c.h3][axis] - lo) % road_spacing == 0 and c.h3 not in taken:
             road.add(c.h3)
-    # one cross road through the storage so every row is connected
+    # Cross roads (headlands) at every bed-band boundary plus one through the storage: the roads
+    # form a grid and every crop bed becomes a block enclosed by roads, so vehicles never detour
+    # far to reach a cell.
     cross_axis = 1 - axis
+    cross_lo = min(ij[c.h3][cross_axis] for c in cells)
+    band = bed_width * road_spacing
     cross_val = ij[s1.h3][cross_axis]
     for c in cells:
-        if ij[c.h3][cross_axis] == cross_val and c.h3 not in taken:
+        cv = ij[c.h3][cross_axis]
+        if c.h3 not in taken and (cv == cross_val or (cv - cross_lo) % band == 0):
             road.add(c.h3)
     # spurs: connect every site to the nearest road cell with a BFS over the grid
     neighbors = {c.h3: c.neighbors for c in cells}
@@ -264,7 +269,6 @@ def plan_infrastructure(grid: HexGrid, k_docks: int | None = None, k_storage: in
         rng.shuffle(rotation)
     beds: dict[tuple[int, int], Bed] = {}
     crop_cells = 0
-    cross_lo = min(ij[c.h3][cross_axis] for c in cells)
     for c in cells:
         if c.h3 in taken or c.h3 in road:
             continue

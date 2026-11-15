@@ -6,6 +6,7 @@
 //  * reacts to robot work events (seeded / weeded / harvested) by mutating the crops
 //  * implements tow mechanics: a towed robot is dragged behind the Logistics AGV and re-parked
 //  * broadcasts solar irradiance (compressed day cycle) so solar skins trickle-charge
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <memory>
@@ -122,10 +123,9 @@ class ArcadiaSupervisor : public rclcpp::Node {
             auto it = world_.robots.find(follow);
             if (it != world_.robots.end() && it->second.node) {
               const double *rp = it->second.node->getPosition();
-              const double pos[3] = {rp[0] - 9.0, rp[1] - 9.0, rp[2] + 6.0};
-              vp->getField("position")->setSFVec3f(pos);
-              const double ori[4] = {-0.35, 0.3, 0.89, 1.9};
-              vp->getField("orientation")->setSFRotation(ori);
+              const double from[3] = {rp[0] - 10.0, rp[1] - 10.0, rp[2] + 7.0};
+              const double to[3] = {rp[0], rp[1], rp[2]};
+              lookAt(vp, from, to);
             }
           }
         }
@@ -245,6 +245,20 @@ class ArcadiaSupervisor : public rclcpp::Node {
     parkAtHome(r);
   }
 
+  // Webots cameras look along their local +x with +z up. Build the orientation for a camera at
+  // `from` looking at `to` as R = Rz(yaw) * Ry(pitch) and convert to axis-angle.
+  void lookAt(webots::Node *vp, const double from[3], const double to[3]) {
+    double fx = to[0] - from[0], fy = to[1] - from[1], fz = to[2] - from[2];
+    double yaw = std::atan2(fy, fx), pitch = std::atan2(-fz, std::hypot(fx, fy));
+    double cz = std::cos(yaw / 2), sz = std::sin(yaw / 2), cy = std::cos(pitch / 2), sy = std::sin(pitch / 2);
+    double w = cz * cy, x = -sz * sy, y = cz * sy, z = sz * cy;
+    double angle = 2.0 * std::acos(std::clamp(w, -1.0, 1.0));
+    double s = std::sqrt(std::max(1e-12, 1.0 - w * w));
+    const double rot[4] = {x / s, y / s, z / s, angle};
+    vp->getField("position")->setSFVec3f(from);
+    vp->getField("orientation")->setSFRotation(rot);
+  }
+
   void setOverviewCamera() {
     webots::Node *vp = sup_.getFromDef("VIEWPOINT");
     if (!vp) return;
@@ -252,10 +266,9 @@ class ArcadiaSupervisor : public rclcpp::Node {
     double cx = (t.value("min_x", -150.0) + t.value("max_x", 150.0)) / 2.0;
     double cy = (t.value("min_y", -150.0) + t.value("max_y", 150.0)) / 2.0;
     double span = std::max(t.value("width", 300.0), t.value("height", 300.0));
-    const double pos[3] = {cx, cy - span * 0.75, span * 0.55};
-    vp->getField("position")->setSFVec3f(pos);
-    const double ori[4] = {1.0, 0.0, 0.0, 0.95};  // looking down-north over the farm
-    vp->getField("orientation")->setSFRotation(ori);
+    const double from[3] = {cx, cy - span * 0.85, span * 0.55};   // south of the farm, elevated
+    const double to[3] = {cx, cy - span * 0.05, 0.0};
+    lookAt(vp, from, to);
     vp->getField("follow")->setSFString("");
   }
 
