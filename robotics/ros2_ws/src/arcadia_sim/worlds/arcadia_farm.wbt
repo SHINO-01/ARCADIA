@@ -22,7 +22,7 @@ DEF VIEWPOINT Viewpoint {
   position 0 -220 160
   follow ""
   followType "Pan and Tilt Shot"
-  near 0.5
+  near 2
 }
 # Plain sky + sun: no HDR cube maps to stream to the browser viewer, cheap on integrated graphics
 Background {
@@ -38,7 +38,7 @@ DEF GROUND Solid {
   name "ground"
   children [
     Shape {
-      appearance PBRAppearance { baseColor 0.33 0.26 0.17 roughness 1 metalness 0 }
+      appearance PBRAppearance { baseColor 0.42 0.31 0.18 roughness 1 metalness 0 }
       geometry DEF GROUND_PLANE Plane { size 600 600 }
     }
   ]

@@ -3,6 +3,7 @@
 #include "arcadia_supervisor/world_spawner.hpp"
 
 #include <sstream>
+#include <vector>
 #include <webots/Field.hpp>
 
 namespace arcadia {
@@ -41,7 +42,7 @@ Rgb cropColour(const std::string &crop, CropState st) {
     case CropState::Seeded: return mix(soil, base, 0.45);
     case CropState::Growing: return base;
     case CropState::Ripe: return {std::min(1.0, base.r + 0.3), base.g, base.b * 0.6};
-    default: return mix(soil, base, 0.30);  // tilled bed, tinted by its crop
+    default: return mix(soil, base, 0.50);  // tilled bed, tinted by its crop
   }
 }
 double stateHeight(double full, CropState st) {
@@ -86,12 +87,23 @@ void WorldSpawner::load(const json &cfg, World &world) {
 void WorldSpawner::spawnTerrain(const json &cfg) {
   const auto &t = cfg["terrain"];
   double w = t.value("width", 300.0), h = t.value("height", 300.0);
-  double cx = (t.value("min_x", -150.0) + t.value("max_x", 150.0)) / 2.0;
-  double cy = (t.value("min_y", -150.0) + t.value("max_y", 150.0)) / 2.0;
-  // tilled field plane slightly above the ground to avoid z-fighting
-  std::ostringstream s;
-  s << "Solid { translation " << f(cx) << " " << f(cy) << " 0.005 name \"field\" children [ Shape { appearance PBRAppearance { baseColor 0.42 0.31 0.18 roughness 1 metalness 0 } geometry Plane { size " << f(w) << " " << f(h) << " } } ] }";
-  farmChildren()->importMFNodeFromString(-1, s.str());
+  // No second field plane on top of the ground (two coplanar planes flicker in the web viewer):
+  // recolour the world's GROUND to tilled soil and enlarge it to the farm.
+  if (webots::Node *ground = sup_.getFromDef("GROUND")) {
+    webots::Node *shape = ground->getField("children")->getMFNode(0);
+    if (shape) {
+      if (webots::Node *app = shape->getField("appearance")->getSFNode()) {
+        const double soil[3] = {0.42, 0.31, 0.18};
+        app->getField("baseColor")->setSFColor(soil);
+      }
+      if (webots::Node *geo = shape->getField("geometry")->getSFNode()) {
+        const double size[2] = {std::max(600.0, w * 1.6), std::max(600.0, h * 1.6)};
+        geo->getField("size")->setSFVec2f(size);
+      }
+    }
+  }
+  // Depth precision for the overview camera (the browser viewer has a shallow depth buffer).
+  if (webots::Node *vp = sup_.getFromDef("VIEWPOINT")) vp->getField("near")->setSFFloat(2.0);
   // boundary fence posts (one every ~15 m) - cheap boxes
   int nx = std::max(2, int(w / 15)), ny = std::max(2, int(h / 15));
   std::ostringstream g;
@@ -111,9 +123,18 @@ void WorldSpawner::spawnTerrain(const json &cfg) {
 }
 
 void WorldSpawner::spawnCells(const json &cfg, World &world) {
+  // Batched spawn: four Group imports instead of ~1,200 single-node imports. Each import is a
+  // scene-tree rebuild plus a W3D update to every streaming client, so batching turns a
+  // multi-minute spawn into a couple of seconds. Bed and weed nodes are looked up by index.
   webots::Field *ch = farmChildren();
-  double edge = world.edge_m;
-  double radius = std::max(0.25, edge * 0.82);  // hexagonal bed tile / crop block (small gap shows the hex grid)
+  const double edge = world.edge_m;
+  const double radius = std::max(0.25, edge * 0.82);  // hexagonal bed tile / crop block
+  std::ostringstream roads, water, crops, weeds;
+  roads << "Group { children [";
+  water << "Group { children [";
+  crops << "Group { children [";
+  weeds << "Group { children [";
+  std::vector<std::string> order;  // crop cells, in import order
   for (const auto &c : cfg["hex"]["cells"]) {
     Cell cell;
     cell.h3 = c["h3"].get<std::string>();
@@ -123,12 +144,9 @@ void WorldSpawner::spawnCells(const json &cfg, World &world) {
     cell.moisture = c.value("moisture", 0.5);
     cell.waterlogged = c.value("waterlogged", false);
     if (cell.kind == "road") {
-      // travel road: flat grey hex-sized disc (cheap), slightly above the field plane
-      std::ostringstream rs;
-      rs << "Solid { translation " << f(cell.x) << " " << f(cell.y) << " 0.025 name \"road_" << cell.h3
-         << "\" children [ Shape { appearance PBRAppearance { baseColor 0.66 0.64 0.6 roughness 1 metalness 0 } geometry Cylinder { radius "
-         << f(edge * 0.98) << " height 0.05 subdivision 6 } } ] }";
-      ch->importMFNodeFromString(-1, rs.str());
+      roads << " Solid { translation " << f(cell.x) << " " << f(cell.y) << " 0.04 name \"road_" << cell.h3
+            << "\" children [ Shape { appearance PBRAppearance { baseColor 0.66 0.64 0.6 roughness 1 metalness 0 } geometry Cylinder { radius "
+            << f(edge * 0.98) << " height 0.08 subdivision 6 } } ] }";
       cell.state = CropState::Infra;
       world.cells[cell.h3] = cell;
       continue;
@@ -138,33 +156,35 @@ void WorldSpawner::spawnCells(const json &cfg, World &world) {
       world.cells[cell.h3] = cell;
       continue;
     }
-    if (cell.waterlogged) {
-      // puddle marker so operators can see the hazard in the 3D view
-      std::ostringstream ws;
-      ws << "Solid { translation " << f(cell.x) << " " << f(cell.y) << " 0.075 name \"water_" << cell.h3
-         << "\" children [ Shape { appearance PBRAppearance { baseColor 0.25 0.45 0.7 roughness 0.05 metalness 0.2 transparency 0.2 } geometry Cylinder { radius "
-         << f(edge * 0.6) << " height 0.02 subdivision 8 } } ] }";
-      ch->importMFNodeFromString(-1, ws.str());
-    }
+    if (cell.waterlogged)
+      water << " Solid { translation " << f(cell.x) << " " << f(cell.y) << " 0.075 name \"water_" << cell.h3
+            << "\" children [ Shape { appearance PBRAppearance { baseColor 0.25 0.45 0.7 roughness 0.05 metalness 0.2 transparency 0.2 } geometry Cylinder { radius "
+            << f(edge * 0.6) << " height 0.02 subdivision 8 } } ] }";
     cell.crop = c.value("crop", "wheat");
     cell.crop_height = c.value("crop_height", 0.8);
     cell.state = stateFrom(c.value("state", "fallow"));
     Rgb col = cropColour(cell.crop, cell.state);
     double hgt = stateHeight(cell.crop_height, cell.state);
-    std::ostringstream s;
-    s << "Solid { translation " << f(cell.x) << " " << f(cell.y) << " " << f(hgt / 2) << " name \"crop_" << cell.h3
-      << "\" children [ Shape { appearance PBRAppearance { baseColor " << f(col.r) << " " << f(col.g) << " " << f(col.b)
-      << " roughness 1 metalness 0 } geometry Cylinder { radius " << f(radius) << " height " << f(hgt) << " subdivision 6 } } ] }";
-    ch->importMFNodeFromString(-1, s.str());
-    cell.node = ch->getMFNode(ch->getCount() - 1);
-    // weed marker: small red sphere, toggled by scaling via translation below ground when clean
-    std::ostringstream wm;
-    wm << "Solid { translation " << f(cell.x) << " " << f(cell.y) << " -2 name \"weed_" << cell.h3
-       << "\" children [ Shape { appearance PBRAppearance { baseColor 0.95 0.2 0.25 roughness 0.8 emissiveColor 0.4 0 0 } geometry Sphere { radius "
-       << f(std::max(0.4, edge * 0.12)) << " subdivision 1 } } ] }";
-    ch->importMFNodeFromString(-1, wm.str());
-    cell.weed_node = ch->getMFNode(ch->getCount() - 1);
+    crops << " Solid { translation " << f(cell.x) << " " << f(cell.y) << " " << f(hgt / 2) << " name \"crop_" << cell.h3
+          << "\" children [ Shape { appearance PBRAppearance { baseColor " << f(col.r) << " " << f(col.g) << " " << f(col.b)
+          << " roughness 1 metalness 0 } geometry Cylinder { radius " << f(radius) << " height " << f(hgt) << " subdivision 6 } } ] }";
+    weeds << " Solid { translation " << f(cell.x) << " " << f(cell.y) << " -2 name \"weed_" << cell.h3
+          << "\" children [ Shape { appearance PBRAppearance { baseColor 0.95 0.2 0.25 roughness 0.8 emissiveColor 0.4 0 0 } geometry Sphere { radius "
+          << f(std::max(0.4, edge * 0.12)) << " subdivision 1 } } ] }";
+    order.push_back(cell.h3);
     world.cells[cell.h3] = cell;
+  }
+  for (auto *os : {&roads, &water, &crops, &weeds}) *os << " ] }";
+  ch->importMFNodeFromString(-1, roads.str());
+  ch->importMFNodeFromString(-1, water.str());
+  ch->importMFNodeFromString(-1, crops.str());
+  webots::Field *crop_children = ch->getMFNode(ch->getCount() - 1)->getField("children");
+  ch->importMFNodeFromString(-1, weeds.str());
+  webots::Field *weed_children = ch->getMFNode(ch->getCount() - 1)->getField("children");
+  for (size_t i = 0; i < order.size(); ++i) {
+    Cell &cell = world.cells[order[i]];
+    cell.node = crop_children->getMFNode(int(i));
+    cell.weed_node = weed_children->getMFNode(int(i));
   }
 }
 
