@@ -32,7 +32,7 @@ bash robotics/scripts/install_webots_tarball.sh     # -> ~/opt/webots, sets WEBO
 make robotics-build
 make sim                        # Webots + supervisor + uav-1/ugv-1/agv-1 + rosbridge :9090 + diagnostics
 
-# 4. Demo farm (or draw one in the dashboard: Geo-select → Planning → Activate)
+# 4. Demo farm (or draw one in the dashboard: Plan → Draw boundary → Generate → Plan → Activate)
 make seed-demo
 ```
 
@@ -45,6 +45,24 @@ docker compose up -d postgres redis
 scripts/dev_backend.sh start      # API :8000 + Celery worker + beat; logs in .run/
 cd frontend && npm run dev        # Vite :5173 proxies /api and /ws to :8000
 ```
+
+## Mission-control UI
+
+The dashboard is grouped into five views (left rail, keys `1`–`5`):
+
+| View | What it is for |
+|---|---|
+| **Plan** | Draw a boundary (built-in tool: click vertices, click the first point / double-click / `Enter` to close, `⌫` undo, `Esc` cancel), tessellate to H3, plan infrastructure, activate. The refresh button starts a **fresh session** (deletes every farm, mission and incident). |
+| **Operations** | Live map + fleet roster + RTS command bar. |
+| **3D Twin** | Embedded Webots W3D stream with camera presets (farm overview / follow a unit). |
+| **Alerts** | Incidents, Chaos Engine (scenario presets, random interval, manual injection) and the event stream. |
+| **Analytics** | Field KPIs, microgrids, yields, fleet telemetry, dispatch history. |
+
+**RTS unit control (Operations):** click a unit to select · ctrl/shift+click to add to the selection · right-click the map to move the selection · shift+right-click to add route waypoints, then **Patrol** (looping) or **Go** · `S` stop · `H` nearest dock · `Esc` clear. Operator orders put a unit under manual control; **Auto** hands it back to the dispatcher. A UAV on patrol keeps surveying the cells it overflies.
+
+**Infrastructure planning:** K-Means++ charging docks (solar/wind), robot storage, a **repair station**, a grid of **travel roads** (row roads every *N* hex rows plus headland cross roads at every bed boundary) and **crop beds** (blocks between roads, sliver beds merged). Road spacing, bed width, orientation (E–W / N–S), dock count and crop rotation are adjustable; re-planning a live farm respawns it in Webots. Ground vehicles route over the roads (Dijkstra, crop cells cost 6× a road cell) and only cut across a bed when the detour would be disproportionate.
+
+**Stranding scenarios:** motor jam, battery collapse and **terrain entrapment** (waterlogged beds are drawn as hazards on the map and in Webots; ground vehicles crossing them can bog down, and the supervisor pins the chassis until it is winched). Tows drive the roads to the unit, winch it and deliver it to the **repair station**. Low-battery units head for the **nearest** charging dock, decided by route length and remaining range.
 
 ## Layer map (spec → implementation)
 

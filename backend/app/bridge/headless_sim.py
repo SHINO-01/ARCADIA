@@ -182,6 +182,13 @@ class HeadlessTwin:
         elif cmd.kind == "tow":
             await self._start_mission(r, {**cmd.payload, "kind": "tow"})
 
+    def _nearest_dock_wp(self, r: RobotSim) -> dict:
+        docks = [i for i in self.infra.values() if str(i.get("kind", "")).endswith("dock")]
+        if not docks:
+            return self._home_wp(r)
+        d = min(docks, key=lambda i: (i["x"] - r.x) ** 2 + (i["y"] - r.y) ** 2)
+        return {"x": d["x"], "y": d["y"], "z": 0.0}
+
     def _home_wp(self, r: RobotSim) -> dict:
         home = self.infra.get(r.home) or next(iter(self.infra.values()))
         return {"x": home["x"], "y": home["y"], "z": 0.0}
@@ -334,7 +341,7 @@ class HeadlessTwin:
             await self.on_event(SimEvent(kind="mission_failed", robot_id=r.id, mission_id=mid, severity="WARN",
                                          payload={"reason": "low battery - returning to dock", "kind": m.get("kind")}))
             await self._start_mission(r, {"mission_id": f"rth-{r.id}-{int(self.sim_time)}", "kind": "charge",
-                                          "waypoints": [self._home_wp(r)]})
+                                          "waypoints": [self._nearest_dock_wp(r)]})
             return
         wps = m.get("waypoints") or []
         if r.work_until > self.sim_time:
