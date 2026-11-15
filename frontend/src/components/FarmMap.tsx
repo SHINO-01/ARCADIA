@@ -86,8 +86,9 @@ export const FarmMap = forwardRef<FarmMapHandle, FarmMapProps>(function FarmMap(
     map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), 'top-right')
     map.addControl(new maplibregl.ScaleControl({ unit: 'metric' }), 'bottom-right')
     map.addControl(new maplibregl.AttributionControl({ compact: true }), 'bottom-right')
-    map.once('idle', () => setImagery(true))
-    setTimeout(() => setImagery(true), 20000)  // never block the UI on a slow tile server
+    // Live data keeps the map re-rendering, so 'idle' is unreliable: poll for the imagery tiles.
+    const imageryPoll = setInterval(() => { if (map.isStyleLoaded() && map.areTilesLoaded()) { setImagery(true); clearInterval(imageryPoll) } }, 400)
+    setTimeout(() => { setImagery(true); clearInterval(imageryPoll) }, 20000)  // never block the UI on a slow tile server
     map.on('load', () => {
       map.addSource('hex', { type: 'geojson', data: { type: 'FeatureCollection', features: [] }, promoteId: 'h3' })
       map.addLayer({ id: 'hex-fill', type: 'fill', source: 'hex', paint: { 'fill-color': ['coalesce', ['feature-state', 'color'], '#6b5a3e'], 'fill-opacity': ['case', ['boolean', ['feature-state', 'hover'], false], 0.9, ['==', ['get', 'kind'], 'road'], 0.85, 0.55] } })
