@@ -263,9 +263,12 @@ class HeadlessTwin:
         r.motor_temp = 40.0
         if recharge:
             r.status = "charging"
-            home = self.infra.get(r.home)
-            if home:
-                r.x, r.y = home["x"], home["y"]
+            # Serviced where it was delivered (repair station / dock pad); only units recovered
+            # somewhere else are parked at their home dock - mirrors the Webots supervisor.
+            if not any((i["x"] - r.x) ** 2 + (i["y"] - r.y) ** 2 < 64.0 for i in self.infra.values()):
+                home = self.infra.get(r.home)
+                if home:
+                    r.x, r.y = home["x"], home["y"]
             await self.on_event(SimEvent(kind="charging_started", robot_id=r.id))
         else:
             r.status = "idle"
