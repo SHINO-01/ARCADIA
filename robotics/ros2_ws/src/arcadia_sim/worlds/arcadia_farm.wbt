@@ -22,6 +22,7 @@ DEF VIEWPOINT Viewpoint {
   position 0 -220 160
   follow ""
   followType "Pan and Tilt Shot"
+  near 0.5
 }
 # Plain sky + sun: no HDR cube maps to stream to the browser viewer, cheap on integrated graphics
 Background {

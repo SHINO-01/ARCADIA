@@ -86,7 +86,8 @@ def launch_setup(context, *args, **kwargs):
 
     supervisor = ExecuteProcess(
         cmd=[os.path.join(get_package_share_directory("arcadia_supervisor"), "..", "..", "lib", "arcadia_supervisor", "supervisor")],
-        name="supervisor", output="screen", additional_env={**_controller_env(home, "arcadia_supervisor")})
+        name="supervisor", output="screen", additional_env={**_controller_env(home, "arcadia_supervisor")},
+        respawn=True, respawn_delay=3.0)
 
     controllers = [
         Node(package="arcadia_sim", executable="robot_controller", name=f"ctrl_{r.replace('-', '_')}", output="screen",

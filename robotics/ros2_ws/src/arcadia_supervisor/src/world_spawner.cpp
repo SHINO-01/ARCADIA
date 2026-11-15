@@ -35,19 +35,21 @@ Rgb cropColour(const std::string &crop, CropState st) {
   else if (crop == "soy") base = {0.45, 0.72, 0.4};
   else if (crop == "tomato") base = {0.35, 0.6, 0.3};
   else if (crop == "lettuce") base = {0.5, 0.85, 0.45};
+  const Rgb soil{0.30, 0.22, 0.14};
+  auto mix = [](Rgb a, Rgb b, double k) { return Rgb{a.r + (b.r - a.r) * k, a.g + (b.g - a.g) * k, a.b + (b.b - a.b) * k}; };
   switch (st) {
-    case CropState::Seeded: return {0.55, 0.45, 0.3};
+    case CropState::Seeded: return mix(soil, base, 0.45);
     case CropState::Growing: return base;
     case CropState::Ripe: return {std::min(1.0, base.r + 0.3), base.g, base.b * 0.6};
-    default: return {0.45, 0.36, 0.25};
+    default: return mix(soil, base, 0.30);  // tilled bed, tinted by its crop
   }
 }
 double stateHeight(double full, CropState st) {
   switch (st) {
-    case CropState::Seeded: return 0.08;
+    case CropState::Seeded: return 0.12;
     case CropState::Growing: return full * 0.6;
     case CropState::Ripe: return full;
-    default: return 0.02;
+    default: return 0.06;  // flat bed tile, clearly above the ground plane
   }
 }
 std::string f(double v) { std::ostringstream o; o.precision(4); o << std::fixed << v; return o.str(); }
@@ -111,7 +113,7 @@ void WorldSpawner::spawnTerrain(const json &cfg) {
 void WorldSpawner::spawnCells(const json &cfg, World &world) {
   webots::Field *ch = farmChildren();
   double edge = world.edge_m;
-  double radius = std::max(0.25, edge * 0.28);  // crop "bush" footprint relative to hex size
+  double radius = std::max(0.25, edge * 0.82);  // hexagonal bed tile / crop block (small gap shows the hex grid)
   for (const auto &c : cfg["hex"]["cells"]) {
     Cell cell;
     cell.h3 = c["h3"].get<std::string>();
@@ -123,9 +125,9 @@ void WorldSpawner::spawnCells(const json &cfg, World &world) {
     if (cell.kind == "road") {
       // travel road: flat grey hex-sized disc (cheap), slightly above the field plane
       std::ostringstream rs;
-      rs << "Solid { translation " << f(cell.x) << " " << f(cell.y) << " 0.012 name \"road_" << cell.h3
-         << "\" children [ Shape { appearance PBRAppearance { baseColor 0.55 0.53 0.5 roughness 1 metalness 0 } geometry Cylinder { radius "
-         << f(edge * 0.95) << " height 0.012 subdivision 6 } } ] }";
+      rs << "Solid { translation " << f(cell.x) << " " << f(cell.y) << " 0.025 name \"road_" << cell.h3
+         << "\" children [ Shape { appearance PBRAppearance { baseColor 0.66 0.64 0.6 roughness 1 metalness 0 } geometry Cylinder { radius "
+         << f(edge * 0.98) << " height 0.05 subdivision 6 } } ] }";
       ch->importMFNodeFromString(-1, rs.str());
       cell.state = CropState::Infra;
       world.cells[cell.h3] = cell;
@@ -139,9 +141,9 @@ void WorldSpawner::spawnCells(const json &cfg, World &world) {
     if (cell.waterlogged) {
       // puddle marker so operators can see the hazard in the 3D view
       std::ostringstream ws;
-      ws << "Solid { translation " << f(cell.x) << " " << f(cell.y) << " 0.01 name \"water_" << cell.h3
-         << "\" children [ Shape { appearance PBRAppearance { baseColor 0.2 0.35 0.55 roughness 0.1 metalness 0.3 transparency 0.25 } geometry Cylinder { radius "
-         << f(edge * 0.8) << " height 0.01 subdivision 8 } } ] }";
+      ws << "Solid { translation " << f(cell.x) << " " << f(cell.y) << " 0.075 name \"water_" << cell.h3
+         << "\" children [ Shape { appearance PBRAppearance { baseColor 0.25 0.45 0.7 roughness 0.05 metalness 0.2 transparency 0.2 } geometry Cylinder { radius "
+         << f(edge * 0.6) << " height 0.02 subdivision 8 } } ] }";
       ch->importMFNodeFromString(-1, ws.str());
     }
     cell.crop = c.value("crop", "wheat");
@@ -152,13 +154,14 @@ void WorldSpawner::spawnCells(const json &cfg, World &world) {
     std::ostringstream s;
     s << "Solid { translation " << f(cell.x) << " " << f(cell.y) << " " << f(hgt / 2) << " name \"crop_" << cell.h3
       << "\" children [ Shape { appearance PBRAppearance { baseColor " << f(col.r) << " " << f(col.g) << " " << f(col.b)
-      << " roughness 1 metalness 0 } geometry Cylinder { radius " << f(radius) << " height " << f(hgt) << " subdivision 8 } } ] }";
+      << " roughness 1 metalness 0 } geometry Cylinder { radius " << f(radius) << " height " << f(hgt) << " subdivision 6 } } ] }";
     ch->importMFNodeFromString(-1, s.str());
     cell.node = ch->getMFNode(ch->getCount() - 1);
     // weed marker: small red sphere, toggled by scaling via translation below ground when clean
     std::ostringstream wm;
-    wm << "Solid { translation " << f(cell.x + radius * 0.8) << " " << f(cell.y) << " -1 name \"weed_" << cell.h3
-       << "\" children [ Shape { appearance PBRAppearance { baseColor 0.95 0.25 0.3 roughness 0.8 } geometry Sphere { radius 0.22 subdivision 1 } } ] }";
+    wm << "Solid { translation " << f(cell.x) << " " << f(cell.y) << " -2 name \"weed_" << cell.h3
+       << "\" children [ Shape { appearance PBRAppearance { baseColor 0.95 0.2 0.25 roughness 0.8 emissiveColor 0.4 0 0 } geometry Sphere { radius "
+       << f(std::max(0.4, edge * 0.12)) << " subdivision 1 } } ] }";
     ch->importMFNodeFromString(-1, wm.str());
     cell.weed_node = ch->getMFNode(ch->getCount() - 1);
     world.cells[cell.h3] = cell;
@@ -180,12 +183,14 @@ void WorldSpawner::setCropState(Cell &c) {
   }
   const double tr[3] = {c.x, c.y, hgt / 2};
   c.node->getField("translation")->setSFVec3f(tr);
+  if (c.weeds) setWeeds(c, true);  // keep the weed marker on top of the (re)grown crop
 }
 
 void WorldSpawner::setWeeds(Cell &c, bool on) {
   c.weeds = on;
   if (!c.weed_node) return;
-  const double tr[3] = {c.x + std::max(0.25, 0.28 * 10.0) * 0.8, c.y, on ? 0.2 : -1.0};
+  const double top = stateHeight(c.crop_height, c.state);
+  const double tr[3] = {c.x, c.y, on ? top + 0.45 : -2.0};
   c.weed_node->getField("translation")->setSFVec3f(tr);
 }
 
