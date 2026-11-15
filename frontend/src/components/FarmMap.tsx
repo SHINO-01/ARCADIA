@@ -43,6 +43,7 @@ export const FarmMap = forwardRef<FarmMapHandle, FarmMapProps>(function FarmMap(
   const altaraRef = useRef<AltaraRenderer | null>(null)
   const popupRef = useRef<maplibregl.Popup | null>(null)
   const [ready, setReady] = useState(false)
+  const [imagery, setImagery] = useState(false)  // first full render (satellite tiles can be slow)
   const { farm, mode, layer, dispatchArm, selected, selectedRobot, route, hoverHex, armDispatch, setHoverHex, notify } = useUI()
   const cellVersion = useLive((s) => s.cellVersion)
   const chaosFlash = useLive((s) => s.chaosFlash)
@@ -85,6 +86,8 @@ export const FarmMap = forwardRef<FarmMapHandle, FarmMapProps>(function FarmMap(
     map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), 'top-right')
     map.addControl(new maplibregl.ScaleControl({ unit: 'metric' }), 'bottom-right')
     map.addControl(new maplibregl.AttributionControl({ compact: true }), 'bottom-right')
+    map.once('idle', () => setImagery(true))
+    setTimeout(() => setImagery(true), 20000)  // never block the UI on a slow tile server
     map.on('load', () => {
       map.addSource('hex', { type: 'geojson', data: { type: 'FeatureCollection', features: [] }, promoteId: 'h3' })
       map.addLayer({ id: 'hex-fill', type: 'fill', source: 'hex', paint: { 'fill-color': ['coalesce', ['feature-state', 'color'], '#6b5a3e'], 'fill-opacity': ['case', ['boolean', ['feature-state', 'hover'], false], 0.9, ['==', ['get', 'kind'], 'road'], 0.85, 0.55] } })
@@ -266,6 +269,9 @@ export const FarmMap = forwardRef<FarmMapHandle, FarmMapProps>(function FarmMap(
   return (
     <div className="relative h-full w-full">
       <div ref={el} className="h-full w-full" />
+      {!imagery && <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-panel/80">
+        <div className="flex items-center gap-2 rounded-md border border-line bg-bg/90 px-3 py-2 text-xs text-fg-2">
+          <span className="h-3 w-3 animate-spin rounded-full border-2 border-leaf border-t-transparent" />Loading satellite imagery…</div></div>}
       {dispatchArm && <div className="pointer-events-none absolute left-1/2 top-3 -translate-x-1/2 rounded-md border border-leaf-2 bg-bg/90 px-3 py-1.5 text-xs text-leaf anim-slide-up">Click a target for <b>{dispatchArm.robotId}</b> · {dispatchArm.kind} <span className="kbd ml-2">Esc</span></div>}
       {drawState.active && <div className="pointer-events-none absolute left-1/2 top-3 -translate-x-1/2 rounded-md border border-leaf-2 bg-bg/90 px-3 py-1.5 text-xs text-fg anim-slide-up">
         <b className="text-leaf">Drawing boundary</b> · {drawState.n} vertices{drawState.areaM2 > 0 ? ` · ${(drawState.areaM2 / 10000).toFixed(2)} ha` : ''} · click the first point / double-click / <span className="kbd">Enter</span> to close · <span className="kbd">⌫</span> undo · <span className="kbd">Esc</span> cancel</div>}
