@@ -8,7 +8,6 @@ psycopg[binary]>=3.2
 alembic>=1.13
 redis>=5.0
 celery>=5.4
-h3>=4.1
 numpy>=1.26
 shapely>=2.0
 websockets>=13

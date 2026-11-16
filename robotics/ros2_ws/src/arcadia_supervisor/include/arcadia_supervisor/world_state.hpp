@@ -16,21 +16,26 @@ using json = nlohmann::json;
 
 enum class CropState { Fallow, Seeded, Growing, Ripe, Harvested, Infra };
 
-struct Cell {
-  std::string h3;
-  double x = 0, y = 0;
-  std::string kind;      // crop | dock | storage
-  std::string crop;      // wheat | maize | ...
+// A bed section: the agronomic unit (state, observation, work). Rendered as one box.
+struct Section {
+  std::string id, bed, crop;
+  double x = 0, y = 0;          // centre (ENU)
+  double length = 10, width = 4, angle = 0;
   double crop_height = 0.6;
   CropState state = CropState::Fallow;
   bool weeds = false;
   double moisture = 0.5;
   double health = 1.0;
   double t_state = 0.0;
-  bool waterlogged = false;
   std::string observed_sig;
-  webots::Node *node = nullptr;       // crop cylinder Solid
-  webots::Node *weed_node = nullptr;  // weed marker (small red sphere), hidden when clean
+  webots::Node *node = nullptr;       // bed / crop box
+  webots::Node *weed_node = nullptr;  // weed marker above the bed, hidden when clean
+};
+
+// Waterlogged low spot on a track: ground vehicles crossing it can bog down.
+struct Hazard {
+  std::string id;
+  double x = 0, y = 0, r = 3.5;
 };
 
 struct RobotRef {
@@ -53,10 +58,10 @@ struct Infra {
 struct World {
   json config;
   std::string farm_id;
-  std::map<std::string, Cell> cells;
+  std::map<std::string, Section> sections;
+  std::vector<Hazard> hazards;
   std::map<std::string, RobotRef> robots;
   std::map<std::string, Infra> infra;
-  double edge_m = 10.0;
   bool loaded = false;
 };
 

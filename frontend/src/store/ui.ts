@@ -16,7 +16,7 @@ interface UIState {
   dispatchArm: { robotId: string; kind: DispatchKind } | null
   route: RoutePoint[]                // route being built with shift+right-click
   routeLoop: boolean
-  hoverHex: string | null
+  hoverInfo: string | null
   layer: 'plan' | 'state' | 'moisture' | 'health' | 'crop'
   follow: string | null              // 3D camera follow target
   mapSlot: HTMLElement | null        // the active view's map placeholder (map is mounted once in App)
@@ -33,7 +33,7 @@ interface UIState {
   popRoutePoint: () => void
   clearRoute: () => void
   setRouteLoop: (v: boolean) => void
-  setHoverHex: (h: string | null) => void
+  setHoverInfo: (h: string | null) => void
   setLayer: (l: UIState['layer']) => void
   setFollow: (id: string | null) => void
   setMapSlot: (el: HTMLElement | null) => void
@@ -43,7 +43,7 @@ interface UIState {
 let toastId = 0
 export const useUI = create<UIState>((set) => ({
   view: 'plan', mode: 'draw', farms: [], farm: null, selected: [], selectedRobot: null, dispatchArm: null, route: [], routeLoop: true,
-  hoverHex: null, layer: 'plan', follow: null, mapSlot: null, toast: null,
+  hoverInfo: null, layer: 'plan', follow: null, mapSlot: null, toast: null,
   setView: (view) => set((s) => ({ view, mode: view === 'plan' ? (s.farm ? 'plan' : 'draw') : view === 'ops' ? 'ops' : s.mode })),
   setMode: (mode) => set({ mode }),
   setFarms: (farms) => set({ farms }),
@@ -59,7 +59,7 @@ export const useUI = create<UIState>((set) => ({
   popRoutePoint: () => set((s) => ({ route: s.route.slice(0, -1) })),
   clearRoute: () => set({ route: [] }),
   setRouteLoop: (routeLoop) => set({ routeLoop }),
-  setHoverHex: (hoverHex) => set({ hoverHex }),
+  setHoverInfo: (hoverInfo) => set({ hoverInfo }),
   setLayer: (layer) => set({ layer }),
   setFollow: (follow) => set({ follow }),
   setMapSlot: (mapSlot) => set({ mapSlot }),

@@ -38,7 +38,7 @@ export function CommandBar() {
       {/* orders */}
       <div className="grid grid-cols-4 gap-1">
         <Cmd icon={<Crosshair size={13} />} label="Move" hint="right-click map" active={dispatchArm?.kind === 'goto'} onClick={() => prim && armDispatch(dispatchArm?.kind === 'goto' ? null : { robotId: prim.id, kind: 'goto' })} />
-        {kinds.slice(0, 3).map((k) => <Cmd key={k} icon={<Zap size={13} />} label={k[0].toUpperCase() + k.slice(1)} hint="click a hex" active={dispatchArm?.kind === k} onClick={() => prim && armDispatch(dispatchArm?.kind === k ? null : { robotId: prim.id, kind: k })} />)}
+        {kinds.slice(0, 3).map((k) => <Cmd key={k} icon={<Zap size={13} />} label={k[0].toUpperCase() + k.slice(1)} hint="click a bed" active={dispatchArm?.kind === k} onClick={() => prim && armDispatch(dispatchArm?.kind === k ? null : { robotId: prim.id, kind: k })} />)}
         <Cmd icon={<Square size={13} />} label="Stop" hint="S" tone="warn" onClick={() => run('Stop', api.stop)} />
         <Cmd icon={<Home size={13} />} label="Dock" hint="H" onClick={() => run('Return to dock', api.returnHome)} />
         <Cmd icon={<Loader size={13} />} label="Auto" hint="hand back" onClick={() => run('Automated dispatch', api.resumeAuto)} />

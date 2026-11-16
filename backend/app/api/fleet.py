@@ -1,13 +1,12 @@
 """Layer 4/5: fleet state, operator overrides (click-to-dispatch), dispatch queue control."""
 from __future__ import annotations
 
-import h3
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_session
-from app.models import Farm, HexCell, Infrastructure, Mission, Robot
+from app.models import Farm, FieldSection, Mission, Robot
 from app.schemas import Command, DispatchRequest, MissionOut, RobotOut, RouteRequest
 from app.services import fleet
 from app.services.geo import Origin
@@ -38,40 +37,50 @@ async def operator_dispatch(robot_id: str, body: DispatchRequest, s: AsyncSessio
         raise HTTPException(409, "robot is not assigned to an active farm")
     farm = await s.get(Farm, robot.farm_id)
     origin = Origin(farm.centroid_lat, farm.centroid_lng)
-    target = None
-    if body.target_h3:
-        cell = (await s.execute(select(HexCell).where(HexCell.farm_id == farm.id, HexCell.h3_index == body.target_h3))).scalar_one_or_none()
-        if cell is None:
-            raise HTTPException(404, "target hex is not part of this farm")
-        target = {"x": cell.x, "y": cell.y, "h3": cell.h3_index, "lat": cell.lat, "lng": cell.lng}
-    elif body.lat is not None and body.lng is not None:
-        x, y = origin.to_xy(body.lat, body.lng)
-        target = {"x": round(x, 3), "y": round(y, 3), "lat": body.lat, "lng": body.lng,
-                  "h3": h3.latlng_to_cell(body.lat, body.lng, farm.h3_resolution)}
-    elif body.x is not None and body.y is not None:
-        lat, lng = origin.to_latlng(body.x, body.y)
-        target = {"x": body.x, "y": body.y, "lat": lat, "lng": lng}
-    if target is None:
-        raise HTTPException(422, "provide target_h3, lat/lng or x/y")
-    z = 6.0 if robot.type == "scout_uav" else 0.0
-    # Cancel whatever the queue had planned for this robot
     live = await fleet.get_robot(robot_id) or {}
+    rx, ry = float(live.get("x", robot.x or 0)), float(live.get("y", robot.y or 0))
+    z = 6.0 if robot.type == "scout_uav" else 0.0
+    kind = body.kind if body.kind in ("goto", "seed", "weed", "harvest", "survey", "charge") else "goto"
+    if robot.type == "scout_uav" and kind in ("seed", "weed", "harvest"):
+        kind = "survey"  # the scout carries cameras, not tools: it inspects the section instead
+    payload: dict = {}
+    target_section = body.target_section
+    from app.services.dispatcher import ground_route, section_mission
+    sec = None
+    if body.target_section:
+        sec = (await s.execute(select(FieldSection).where(FieldSection.farm_id == farm.id, FieldSection.id == body.target_section))).scalar_one_or_none()
+        if sec is None:
+            raise HTTPException(404, "section not found")
+    if sec is not None and robot.type != "scout_uav" and kind in ("seed", "weed", "harvest"):
+        # seed/weed: tramline pass beside the bed; harvest: pass down the bed itself
+        wps, pass_from, _ = section_mission(farm, sec, rx, ry, kind)
+        payload = {"section": sec.id, "bed": sec.bed_id, "crop": sec.crop, "pass_from": pass_from}
+    else:
+        if sec is not None:
+            tx, ty = sec.x, sec.y
+        elif body.lat is not None and body.lng is not None:
+            tx, ty = origin.to_xy(body.lat, body.lng)
+        elif body.x is not None and body.y is not None:
+            tx, ty = body.x, body.y
+        else:
+            raise HTTPException(422, "provide target_section, lat/lng or x/y")
+        if robot.type == "scout_uav":
+            lat, lng = origin.to_latlng(tx, ty)
+            wps = [{"x": round(tx, 3), "y": round(ty, 3), "z": z, "lat": lat, "lng": lng}]
+        else:  # ground units never leave the tracks: the target snaps to the nearest track point
+            wps, _ = ground_route(farm, rx, ry, tx, ty)
+            if kind in ("survey", "seed", "weed", "harvest"):  # work needs a section; without one it is a move
+                kind = "goto"
+    if not wps:
+        raise HTTPException(409, "no route on the track network")
+    # Cancel whatever the queue had planned for this robot
     for m in (await s.execute(select(Mission).where(Mission.robot_id == robot_id,
                                                     Mission.status.in_(("queued", "dispatched", "running"))))).scalars():
         m.status = "cancelled"
     if live.get("current_mission_id") or live.get("mission_id"):
         await fleet.send_command(Command(kind="cancel", robot_id=robot_id, payload={}))
-    kind = body.kind if body.kind in ("goto", "seed", "weed", "harvest", "survey", "charge") else "goto"
-    if robot.type == "scout_uav":
-        wps = [{**target, "z": z}]
-    else:
-        from app.services.routing import RoadNetwork
-        rows = (await s.execute(select(HexCell.h3_index, HexCell.x, HexCell.y, HexCell.lat, HexCell.lng, HexCell.kind)
-                                .where(HexCell.farm_id == farm.id))).all()
-        net = RoadNetwork([{"h3": r[0], "x": r[1], "y": r[2], "lat": r[3], "lng": r[4], "kind": r[5]} for r in rows])
-        wps = [w.model_dump() for w in net.route(float(live.get("x", robot.x or 0)), float(live.get("y", robot.y or 0)), target)]
     m = Mission(farm_id=farm.id, robot_id=robot_id, kind=kind, source="operator", priority=body.priority,
-                target_h3=target.get("h3"), waypoints=wps, payload={"crop": None}, note=body.note or "Operator override")
+                target_section=target_section if payload else None, waypoints=wps, payload=payload, note=body.note or "Operator override")
     s.add(m)
     await s.commit()
     await s.refresh(m)
@@ -88,24 +97,51 @@ async def set_view(follow: str = "", mode: str = "pan"):
     return {"ok": True, "follow": follow or None}
 
 
-@router.post("/{robot_id}/route", response_model=MissionOut, status_code=201)
-async def operator_route(robot_id: str, body: RouteRequest, s: AsyncSession = Depends(get_session)):
-    """RTS-style route: ordered waypoints (shift+right-click on the map), optionally looped as a patrol."""
+async def _route_waypoints(s: AsyncSession, robot_id: str, body: RouteRequest) -> tuple[Robot, Farm, list[dict]]:
+    """Operator route -> mission waypoints. The UAV flies the clicks directly (6 m above the crop);
+    ground units follow the tracks leg by leg (each click snaps onto the nearest track)."""
     robot = await s.get(Robot, robot_id)
     if robot is None or not robot.farm_id:
         raise HTTPException(404, "robot not found")
     farm = await s.get(Farm, robot.farm_id)
     origin = Origin(farm.centroid_lat, farm.centroid_lng)
     z = 6.0 if robot.type == "scout_uav" else 0.0
-    wps = []
-    for w in body.waypoints:
-        if w.lat is not None and w.lng is not None:
-            x, y = origin.to_xy(w.lat, w.lng)
-            wps.append({"x": round(x, 3), "y": round(y, 3), "z": z, "lat": w.lat, "lng": w.lng,
-                        "h3": h3.latlng_to_cell(w.lat, w.lng, farm.h3_resolution)})
-        else:
-            lat, lng = origin.to_latlng(w.x, w.y)
-            wps.append({"x": w.x, "y": w.y, "z": z, "lat": lat, "lng": lng})
+    pts = [origin.to_xy(w.lat, w.lng) if w.lat is not None and w.lng is not None else (w.x, w.y) for w in body.waypoints]
+    wps: list[dict] = []
+    if robot.type == "scout_uav":
+        for x, y in pts:
+            lat, lng = origin.to_latlng(x, y)
+            wps.append({"x": round(x, 3), "y": round(y, 3), "z": z, "lat": lat, "lng": lng})
+    else:
+        from app.services.dispatcher import ground_route
+        live0 = await fleet.get_robot(robot_id) or {}
+        cx, cy = float(live0.get("x", robot.x or 0)), float(live0.get("y", robot.y or 0))
+        legs = list(pts) + ([pts[0]] if body.loop and len(pts) > 1 else [])
+        for x, y in legs:
+            leg, _ = ground_route(farm, cx, cy, x, y)
+            wps += leg
+            if leg:
+                cx, cy = leg[-1]["x"], leg[-1]["y"]
+        if not wps:
+            raise HTTPException(409, "no route on the track network")
+    return robot, farm, wps
+
+
+@router.post("/{robot_id}/route/preview")
+async def preview_route(robot_id: str, body: RouteRequest, s: AsyncSession = Depends(get_session)):
+    """The path a route would really take (for the map), without dispatching anything."""
+    robot, _, wps = await _route_waypoints(s, robot_id, body)
+    live = await fleet.get_robot(robot_id) or {}
+    start = [live.get("lng", robot.lng), live.get("lat", robot.lat)]
+    coords = ([start] if start[0] is not None and robot.type != "scout_uav" else []) + [[w["lng"], w["lat"]] for w in wps]
+    return {"type": "Feature", "geometry": {"type": "LineString", "coordinates": coords},
+            "properties": {"ground": robot.type != "scout_uav", "waypoints": len(wps)}}
+
+
+@router.post("/{robot_id}/route", response_model=MissionOut, status_code=201)
+async def operator_route(robot_id: str, body: RouteRequest, s: AsyncSession = Depends(get_session)):
+    """RTS-style route: ordered waypoints (shift+right-click on the map), optionally looped as a patrol."""
+    robot, farm, wps = await _route_waypoints(s, robot_id, body)
     for m in (await s.execute(select(Mission).where(Mission.robot_id == robot_id,
                                                     Mission.status.in_(("queued", "dispatched", "running"))))).scalars():
         m.status = "cancelled"
@@ -146,7 +182,8 @@ async def return_home(robot_id: str, s: AsyncSession = Depends(get_session)):
     import asyncio
     def _pick():
         with sync_session() as ss:
-            return nearest_dock(ss, robot.farm_id, robot.type, rx, ry)
+            farm_row = ss.get(Farm, robot.farm_id)
+            return nearest_dock(ss, farm_row, robot.type, rx, ry)
     picked = await asyncio.get_running_loop().run_in_executor(None, _pick)
     if picked is None:
         raise HTTPException(409, "farm has no charging dock")

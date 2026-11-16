@@ -20,7 +20,7 @@ export function FeedPanel() {
             <span className="mono text-fg-3">{fmt.time(e.t / 1000)}</span>
             <span className="font-medium">{e.kind}</span>
             {e.robot_id && <span className="mono text-fg-3">{e.robot_id}</span>}
-            <span className="mono truncate text-fg-3">{summarize(e.payload, e.h3)}</span>
+            <span className="mono truncate text-fg-3">{summarize(e.payload, e.section)}</span>
           </li>
         ))}
       </ul>
@@ -28,15 +28,16 @@ export function FeedPanel() {
   )
 }
 
-function summarize(p: Record<string, unknown>, h3?: string | null) {
+function summarize(p: Record<string, unknown>, section?: string | null) {
   const parts: string[] = []
   if (p.kind) parts.push(String(p.kind))
   if (p.fault) parts.push(String(p.fault))
   if (p.kg) parts.push(`${p.kg} kg`)
   if (p.crop) parts.push(String(p.crop))
-  if (p.cells_observed) parts.push(`${p.cells_observed} cells`)
+  if (p.sections_observed) parts.push(`${p.sections_observed} sections`)
   if (p.target) parts.push(`→ ${p.target}`)
   if (p.title) parts.push(String(p.title))
-  if (h3) parts.push(h3)
+  if (section) parts.push(`section ${section}`)
+  else if (p.section) parts.push(`section ${p.section}`)
   return parts.join(' · ')
 }

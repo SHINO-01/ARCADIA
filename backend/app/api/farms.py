@@ -1,4 +1,4 @@
-"""Layer 1 - The Ground: farms, hex grids, infrastructure planning, world config, activation."""
+"""Layer 1 - The Ground: farms (boundary), controlled-traffic layout planning, world config, activation."""
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -9,10 +9,12 @@ from app.api.deps import get_farm_or_404
 from app.bridge.manager import bridge
 from app.core.db import get_session
 from app.core.redis import get_redis
-from app.models import Farm, HexCell, Incident, Infrastructure, Mission, Robot
+from app.models import Farm, FieldSection, Incident, Infrastructure, Mission, Robot
 from app.schemas import FarmCreate, FarmOut, InfrastructureOut, PlanRequest
 from app.services import fleet
-from app.services.h3_engine import HexGrid, build_hexgrid, hexgrid_feature_collection
+from app.services.field import MAX_FIELD_AREA_M2, field_from_geojson, field_of_farm
+from app.services.geo import Origin
+from app.services.layout import LayoutParams
 from app.services.planner import plan_infrastructure
 from app.services.world_builder import build_world_config
 
@@ -27,17 +29,16 @@ async def list_farms(s: AsyncSession = Depends(get_session)):
 @router.post("", response_model=FarmOut, status_code=201)
 async def create_farm(body: FarmCreate, s: AsyncSession = Depends(get_session)):
     try:
-        grid = build_hexgrid(body.boundary, body.resolution, body.seed, body.target_cells)
+        fld = field_from_geojson(body.boundary)
     except ValueError as e:
         raise HTTPException(422, str(e)) from e
-    if len(grid.cells) > 6000:
-        raise HTTPException(422, f"{len(grid.cells)} cells is too many for the local sim; pick a smaller area or lower resolution")
-    farm = Farm(name=body.name, boundary=body.boundary, centroid_lat=grid.origin.lat, centroid_lng=grid.origin.lng,
-                area_m2=round(grid.area_m2, 1), h3_resolution=grid.resolution, cell_count=len(grid.cells), seed=body.seed)
+    if fld.area_m2 < 2_000:
+        raise HTTPException(422, f"{fld.area_m2:.0f} m² is too small for a headland, beds and tramlines")
+    if fld.area_m2 > MAX_FIELD_AREA_M2:
+        raise HTTPException(422, f"{fld.area_m2 / 10_000:.0f} ha is too large for the local sim (max {MAX_FIELD_AREA_M2 / 10_000:.0f} ha)")
+    farm = Farm(name=body.name, boundary=body.boundary, centroid_lat=fld.origin.lat, centroid_lng=fld.origin.lng,
+                area_m2=round(fld.area_m2, 1), seed=body.seed)
     s.add(farm)
-    await s.flush()
-    s.add_all([HexCell(farm_id=farm.id, h3_index=c.h3, lat=c.lat, lng=c.lng, x=c.x, y=c.y, kind=c.kind,
-                       crop_type=c.crop_type, state=c.state, soil_moisture=c.soil_moisture) for c in grid.cells])
     await s.commit()
     await s.refresh(farm)
     return farm
@@ -59,78 +60,84 @@ async def delete_farm(farm_id: str, s: AsyncSession = Depends(get_session)):
     await s.commit()
 
 
-@router.get("/{farm_id}/hexgrid")
-async def get_hexgrid(farm_id: str, s: AsyncSession = Depends(get_session)):
-    await get_farm_or_404(s, farm_id)
-    cells = (await s.execute(select(HexCell).where(HexCell.farm_id == farm_id))).scalars().all()
-    return hexgrid_feature_collection(cells, extra=lambda c: {
-        "last_survey_at": c.last_survey_at.isoformat() if c.last_survey_at else None})
-
-
 @router.get("/{farm_id}/infrastructure", response_model=list[InfrastructureOut])
 async def get_infrastructure(farm_id: str, s: AsyncSession = Depends(get_session)):
     await get_farm_or_404(s, farm_id)
     return (await s.execute(select(Infrastructure).where(Infrastructure.farm_id == farm_id))).scalars().all()
 
 
-def _grid_from_db(farm: Farm, cells: list[HexCell]) -> HexGrid:
-    from app.services.geo import Origin
-    from app.services.h3_engine import HexCellSpec
-    import h3 as _h3
-    return HexGrid(resolution=farm.h3_resolution, origin=Origin(farm.centroid_lat, farm.centroid_lng), area_m2=farm.area_m2,
-                   edge_m=_h3.average_hexagon_edge_length(farm.h3_resolution, unit="m"),
-                   cells=_with_neighbors([HexCellSpec(h3=c.h3_index, lat=c.lat, lng=c.lng, x=c.x, y=c.y, crop_type=c.crop_type or "wheat",
-                                      kind="crop", state=c.state if c.state != "infra" else "fallow", weeds=c.weeds,
-                                      soil_moisture=c.soil_moisture) for c in cells]))
-
-
-def _with_neighbors(specs):
-    import h3 as _h3
-    known = {c.h3 for c in specs}
-    for c in specs:
-        c.neighbors = [n for n in _h3.grid_ring(c.h3, 1) if n in known]
-    return specs
-
-
 @router.post("/{farm_id}/plan", response_model=FarmOut)
 async def plan_farm(farm_id: str, body: PlanRequest, s: AsyncSession = Depends(get_session)):
-    """Sprint 2: K-Means docks + storage/repair, travel roads, crop beds, world-config payload.
-    Re-running with other parameters repositions roads and beds."""
+    """Controlled-traffic layout (beds, tramlines, headland, alleys) + K-Means docks, storage and a
+    repair station in the yard + world-config payload. Re-planning repositions beds and tracks."""
     farm = await get_farm_or_404(s, farm_id)
-    cells = (await s.execute(select(HexCell).where(HexCell.farm_id == farm_id))).scalars().all()
-    grid = _grid_from_db(farm, cells)
+    fld = field_of_farm(farm)
     seed = body.seed if body.seed is not None else farm.seed
-    report = plan_infrastructure(grid, body.k_docks, body.k_storage, seed, road_spacing=body.road_spacing,
-                                 bed_width=body.bed_width, orientation=body.orientation, shuffle_crops=body.shuffle_crops)
+    params = LayoutParams(bed_width=body.bed_width, lane_width=body.lane_width, headland_width=body.headland_width,
+                          section_length=body.section_length, alley_spacing=body.alley_spacing, orientation=body.orientation,
+                          shuffle_crops=body.shuffle_crops, seed=seed)
+    try:
+        report = plan_infrastructure(fld, body.k_docks, body.k_storage, seed, params=params)
+    except ValueError as e:
+        raise HTTPException(422, str(e)) from e
     await s.execute(delete(Infrastructure).where(Infrastructure.farm_id == farm_id))
-    spec_by_h3 = {c.h3: c for c in grid.cells}
-    bed_of = {h: b.id for b in report.beds for h in b.cells}
-    for c in cells:
-        spec = spec_by_h3[c.h3_index]
-        c.kind = "crop"
-        c.bed_id = bed_of.get(c.h3_index)
-        c.crop_type = spec.crop_type
-        if spec.kind == "road":
-            c.kind, c.state, c.crop_type, c.bed_id = "road", "infra", None, None
-        elif c.state == "infra":
-            c.state = "fallow"
-    by_h3 = {c.h3_index: c for c in cells}
+    await s.execute(delete(FieldSection).where(FieldSection.farm_id == farm_id))
+    origin = fld.origin
+    world = build_world_config(farm.id, farm.name, fld, report, seed)
+    moist = {w["id"]: w["moisture"] for w in world["sections"]}
+    for sec in report.layout.sections:
+        lat, lng = origin.to_latlng(sec.x, sec.y)
+        s.add(FieldSection(farm_id=farm_id, id=sec.id, bed_id=sec.bed_id, crop=sec.crop, state="fallow", weeds=False,
+                           moisture=moist.get(sec.id, 0.5), health=1.0, x=sec.x, y=sec.y, lat=lat, lng=lng, length=sec.length, width=sec.width,
+                           angle=sec.angle, polygon=sec.polygon, passes=sec.passes))
     for site in report.sites:
-        s.add(Infrastructure(farm_id=farm_id, slug=site.slug, kind=site.kind, h3_index=site.h3, lat=site.lat, lng=site.lng,
+        s.add(Infrastructure(farm_id=farm_id, slug=site.slug, kind=site.kind, lat=site.lat, lng=site.lng,
                              x=site.x, y=site.y, cluster_size=site.cluster_size, capacity_kw=site.capacity_kw,
-                             storage_kwh=site.storage_kwh, stored_kwh=round(site.storage_kwh * 0.65, 1)))
-        cell = by_h3.get(site.h3)
-        if cell is not None:
-            cell.kind = "dock" if site.kind.endswith("dock") else "repair" if site.kind == "repair_station" else "storage"
-            cell.state, cell.crop_type, cell.bed_id = "infra", None, None
+                             storage_kwh=site.storage_kwh, stored_kwh=round(site.storage_kwh * 0.65, 1),
+                             meta={"access": site.access}))
     farm.plan = report.to_dict()
-    farm.world_config = build_world_config(farm.id, farm.name, grid, report, seed)
+    farm.world_config = world
     farm.status = "planned" if farm.status != "active" else "active"
     await s.commit()
     await s.refresh(farm)
     if farm.status == "active":  # re-planning a live farm: push the new world to the sim
         await bridge.activate_farm(farm, await _robots_state(s, farm))
     return farm
+
+
+@router.get("/{farm_id}/layout")
+async def get_layout(farm_id: str, s: AsyncSession = Depends(get_session)):
+    """Physical field layout as GeoJSON: bed sections (polygons, live state), tracks (buffered to
+    their real width), yard pads and waterlogged hazards."""
+    farm = await get_farm_or_404(s, farm_id)
+    if not farm.world_config or farm.world_config.get("schema", 0) < 3:
+        return {"type": "FeatureCollection", "features": []}
+    from shapely.geometry import LineString, Point
+    origin = Origin(farm.centroid_lat, farm.centroid_lng)
+    to_ll = lambda ring: [list(reversed(origin.to_latlng(x, y))) for x, y in ring]  # noqa: E731  -> [lng, lat]
+    feats = []
+    secs = (await s.execute(select(FieldSection).where(FieldSection.farm_id == farm_id))).scalars().all()
+    for sec in secs:
+        feats.append({"type": "Feature", "id": sec.id, "geometry": {"type": "Polygon", "coordinates": [to_ll(sec.polygon)]},
+                      "properties": {"layer": "section", "id": sec.id, "bed": sec.bed_id, "crop": sec.crop, "state": sec.state,
+                                     "weeds": sec.weeds, "moisture": sec.moisture, "health": sec.health,
+                                     "surveyed": sec.last_survey_at is not None}})
+    order = {"headland": 0, "alley": 1, "spur": 2, "lane": 3}
+    for t in sorted(farm.world_config["tracks"], key=lambda t: order.get(t["kind"], 9)):
+        poly = LineString(t["coords"]).buffer(t["width"] / 2, cap_style=2, join_style=2)
+        rings = [poly.exterior.coords] if poly.geom_type == "Polygon" else [g.exterior.coords for g in poly.geoms]
+        for i, ring in enumerate(rings):
+            feats.append({"type": "Feature", "geometry": {"type": "Polygon", "coordinates": [to_ll(ring)]},
+                          "properties": {"layer": "track", "kind": t["kind"], "id": f"{t['id']}{'' if i == 0 else i}"}})
+    for hz in farm.world_config.get("hazards", []):
+        ring = Point(hz["x"], hz["y"]).buffer(hz["r"], quad_segs=8).exterior.coords
+        feats.append({"type": "Feature", "geometry": {"type": "Polygon", "coordinates": [to_ll(ring)]},
+                      "properties": {"layer": "hazard", "id": hz["id"]}})
+    for inf in farm.world_config["infrastructure"]:
+        ring = Point(inf["x"], inf["y"]).buffer(5.0, cap_style=3).exterior.coords
+        feats.append({"type": "Feature", "geometry": {"type": "Polygon", "coordinates": [to_ll(ring)]},
+                      "properties": {"layer": "pad", "kind": inf["kind"], "id": inf["id"]}})
+    return {"type": "FeatureCollection", "features": feats}
 
 
 async def _robots_state(s: AsyncSession, farm: Farm) -> list[dict]:
@@ -142,7 +149,7 @@ async def _robots_state(s: AsyncSession, farm: Farm) -> list[dict]:
 
 @router.delete("", status_code=204)
 async def reset_all(s: AsyncSession = Depends(get_session)):
-    """Fresh session: delete every farm (cells, infrastructure, robots cascade) and clear live state."""
+    """Fresh session: delete every farm (sections, infrastructure, robots cascade) and clear live state."""
     await fleet.set_active_farm_id(None)
     await fleet.set_fleet([])
     await s.execute(delete(Robot))
@@ -201,7 +208,6 @@ async def activate_farm(farm_id: str, s: AsyncSession = Depends(get_session)):
 
 
 def bridge_origin_latlng(farm: Farm, x: float, y: float) -> tuple[float, float]:
-    from app.services.geo import Origin
     lat, lng = Origin(farm.centroid_lat, farm.centroid_lng).to_latlng(x, y)
     return round(lat, 7), round(lng, 7)
 
@@ -209,9 +215,11 @@ def bridge_origin_latlng(farm: Farm, x: float, y: float) -> tuple[float, float]:
 @router.get("/{farm_id}/stats")
 async def farm_stats(farm_id: str, s: AsyncSession = Depends(get_session)):
     await get_farm_or_404(s, farm_id)
-    rows = (await s.execute(select(HexCell.state, func.count()).where(HexCell.farm_id == farm_id, HexCell.kind == "crop")
-                            .group_by(HexCell.state))).all()
-    weeds = (await s.execute(select(func.count()).where(HexCell.farm_id == farm_id, HexCell.weeds.is_(True)))).scalar_one()
-    surveyed = (await s.execute(select(func.count()).where(HexCell.farm_id == farm_id, HexCell.last_survey_at.is_not(None)))).scalar_one()
-    moisture = (await s.execute(select(func.avg(HexCell.soil_moisture)).where(HexCell.farm_id == farm_id, HexCell.kind == "crop"))).scalar_one()
-    return {"states": {k: v for k, v in rows}, "weeds": weeds, "surveyed": surveyed, "avg_moisture": round(float(moisture or 0), 3)}
+    rows = (await s.execute(select(FieldSection.state, func.count()).where(FieldSection.farm_id == farm_id)
+                            .group_by(FieldSection.state))).all()
+    weeds = (await s.execute(select(func.count()).where(FieldSection.farm_id == farm_id, FieldSection.weeds.is_(True)))).scalar_one()
+    surveyed = (await s.execute(select(func.count()).where(FieldSection.farm_id == farm_id,
+                                                           FieldSection.last_survey_at.is_not(None)))).scalar_one()
+    moisture = (await s.execute(select(func.avg(FieldSection.moisture)).where(FieldSection.farm_id == farm_id))).scalar_one()
+    return {"states": {k: v for k, v in rows}, "weeds": weeds, "surveyed": surveyed, "avg_moisture": round(float(moisture or 0), 3),
+            "unit": "sections"}

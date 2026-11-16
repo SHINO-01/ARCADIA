@@ -44,7 +44,7 @@ export function MissionsPanel() {
             <li key={m.id} className="flex items-center gap-2 px-1 py-0.5 text-[11px] text-fg-2">
               <Chip tone={TONE[m.status] ?? 'neutral'}>{m.status}</Chip><span>{m.kind}</span><span className="mono text-fg-3">{m.robot_id}</span>
               {m.result && 'kg' in m.result && <span className="mono text-leaf">+{String(m.result.kg)} kg</span>}
-              {m.result && 'cells_observed' in m.result && <span className="mono text-sky">{String(m.result.cells_observed)} cells</span>}
+              {m.result && 'sections_observed' in m.result && <span className="mono text-sky">{String(m.result.sections_observed)} sections</span>}
               <span className="mono ml-auto text-fg-3">{fmt.time(m.completed_at ?? m.created_at)}</span>
             </li>
           ))}

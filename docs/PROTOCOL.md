@@ -15,17 +15,19 @@ plain JSON with the same field names.
 
 Robot ids use hyphens (`uav-1`); ROS topic namespaces use underscores (`/arcadia/uav_1/...`).
 Positions are local ENU metres relative to the farm centroid (`farm.origin`); the backend adds
-WGS84 lat/lng and the H3 cell before fan-out to dashboards.
+WGS84 lat/lng before fan-out to dashboards. `arcadia_msgs/Event.section` names the bed section an
+event concerns (empty if none).
 
 ## Events (`kind` → payload)
 
 | kind | emitted by | payload | backend effect |
 |---|---|---|---|
-| `world_loaded` | supervisor / twin | `{cells, source}` | log |
-| `robot_online` | robot controller at boot | `{type, active, battery_pct, x, y}` | fail its in-flight missions, resolve its incidents, reset to idle |
-| `cell_observed` | supervisor (UAV within `sensor_radius_m`) | `{state, weeds, soil_moisture, health}` | update `hex_cells`, push `cell` to dashboards (mock multispectral CV) |
-| `mission_started` / `mission_complete` / `mission_failed` | robot | `{kind, reason?, kg?, cells_observed?}` | mission lifecycle, robot status |
-| `seeded` / `weeded` / `harvested` | robot (after tool dwell) | `{crop, kg?}` | cell state, `yields` row; the supervisor mutates the crop ground truth |
+| `world_loaded` | supervisor / twin | `{sections, source}` | log |
+| `robot_online` | robot controller at boot | `{type, active, battery_pct, x, y}` | fail its in-flight missions, resolve its incidents, reset to idle at the reported position |
+| `section_observed` | supervisor (UAV within `sensor_radius_m` + half a section) | `{section, state, weeds, moisture, health}` | update `sections`, push `section` to dashboards (mock multispectral CV) |
+| `mission_started` / `mission_complete` / `mission_failed` | robot | `{kind, reason?, kg?, section?, sections_observed?}` | mission lifecycle, robot status |
+| `seeded` / `weeded` / `harvested` | robot (end of the work pass) | `{section, crop, kg?, was?}` | section state; the supervisor mutates the crop ground truth. The headless twin adds `was`/`kg` and a `yields` row is written when `was` is `ripe` |
+| `harvest_result` | supervisor (on `harvested`) | `{section, crop, was, area_m2}` | ground truth of the cut: a `yields` row only when the crop `was` ripe |
 | `fault_detected` | robot | `{fault, params, x, y, battery_pct, ...}` | creates an `incidents` row (ERROR → requires tow for `motor_jam`/`battery_drop`), interruptive modal |
 | `fault_cleared` | robot | `{recharged}` | incident resolved, robot idle/charging |
 | `tow_attached` / `tow_complete` | AGV | `{target}` | towed status; on complete the backend issues `clear_fault{recharge:true}` |
@@ -36,9 +38,9 @@ WGS84 lat/lng and the H3 cell before fan-out to dashboards.
 
 | kind | payload | consumer |
 |---|---|---|
-| `world_load` | `{farm_id, world}` (full world config, schema 1) | supervisor spawns/respawns the farm; robots learn their home dock |
-| `mission` | `{mission_id, kind, waypoints:[{x,y,z,h3?}], target_h3?, crop?}` | robot (pure-pursuit waypoint follower) |
-| `tow` | `{mission_id, target_robot, waypoints}` | AGV; second waypoint is the drop-off dock |
+| `world_load` | `{farm_id, world}` (world config schema 4: `sections`, `tracks`, `track_graph`, `hazards`, `infrastructure`, `robots`) | supervisor spawns/respawns the farm; robots learn their docks and the track graph |
+| `mission` | `{mission_id, kind, waypoints:[{x,y,z,lat?,lng?}], section?, bed?, crop?, pass_from?, loop?}` | robot (look-ahead path follower). Ground units first join the tracks from their real pose; waypoints after `pass_from` are the work pass at 0.5 m/s (harvest: down the bed's centre line) |
+| `tow` | `{mission_id, target_robot, pickup_index, waypoints}` | AGV; on-track route to the unit (`pickup_index`), then to the repair station |
 | `cancel`, `return_home` | `{mission_id?}` | robot |
 | `chaos` | `{fault, params, source}` | robot (motor jam locks a wheel, battery drop sets SoC, latency delays odometry, glitch biases localisation) |
 | `clear_fault` | `{recharge}` | robot; supervisor re-parks it at the dock when recharging |
@@ -49,7 +51,7 @@ WGS84 lat/lng and the H3 cell before fan-out to dashboards.
 ## Backend fan-out (`/ws/telemetry`)
 
 One WebSocket multiplexes `telemetry` frames (≤ 5 Hz/robot) and dashboard messages:
-`snapshot`, `fleet`, `fleet_reset`, `bridge`, `cell`, `event`, `mission`, `incident`,
+`snapshot`, `fleet`, `fleet_reset`, `bridge`, `section`, `event`, `mission`, `incident`,
 `incident_resolved`, `chaos`, `chaos_config`, `dispatch`, `diagnostics`, `energy`.
 Telemetry frames are written into a render-free registry and drawn by the Altara canvas at
 60 fps with interpolation between the last two samples; only coarse state touches React.

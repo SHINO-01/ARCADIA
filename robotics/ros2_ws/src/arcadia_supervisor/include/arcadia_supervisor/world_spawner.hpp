@@ -9,14 +9,14 @@ class WorldSpawner {
   explicit WorldSpawner(webots::Supervisor &sup) : sup_(sup) {}
   void load(const json &cfg, World &world);
   void clear(World &world);
-  void setCropState(Cell &c);      // resize/recolour the crop cylinder to reflect its state
-  void setWeeds(Cell &c, bool on);
+  void setCropState(Section &c);   // resize/recolour the bed box to reflect its state
+  void setWeeds(Section &c, bool on);
 
  private:
   webots::Supervisor &sup_;
   webots::Field *farmChildren();
   void spawnTerrain(const json &cfg);
-  void spawnCells(const json &cfg, World &world);
+  void spawnFieldLayout(const json &cfg, World &world);  // beds, tracks, hazards (batched)
   void spawnInfra(const json &cfg, World &world);
   void spawnRobots(const json &cfg, World &world);
   int imported_ = 0;

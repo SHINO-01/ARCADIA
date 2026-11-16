@@ -20,7 +20,6 @@ import logging
 import time
 from datetime import datetime, timezone
 
-import h3
 from sqlalchemy import select
 
 from app.bridge.headless_sim import HeadlessTwin
@@ -52,7 +51,6 @@ class BridgeManager:
         self.twin = HeadlessTwin(self._on_telemetry, self._on_event, hz=settings.headless_tick_hz)
         self.farm_id: str | None = None
         self.origin: Origin | None = None
-        self.resolution: int = 12
         self.world: dict | None = None
         self._tasks: list[asyncio.Task] = []
         self._buffer: list[dict] = []
@@ -189,7 +187,6 @@ class BridgeManager:
         self.farm_id = farm.id
         self.world = farm.world_config
         self.origin = Origin(farm.centroid_lat, farm.centroid_lng)
-        self.resolution = farm.h3_resolution
 
     async def activate_farm(self, farm: Farm, robots: list[dict]) -> None:
         self._set_world(farm)
@@ -197,7 +194,7 @@ class BridgeManager:
         await fleet.set_fleet(robots)
         if self.mode == "headless":
             self.twin.load_world(self.world)  # type: ignore[arg-type]
-            await self._on_event(SimEvent(kind="world_loaded", payload={"source": "twin", "cells": len(self.world["hex"]["cells"])}))
+            await self._on_event(SimEvent(kind="world_loaded", payload={"source": "twin", "sections": len(self.world.get("sections") or [])}))
         elif self.ros.connected:
             await self._send_world_load()
         await self._publish_status()
@@ -263,7 +260,7 @@ class BridgeManager:
             payload = json.loads(msg.get("payload_json") or "{}")
         except json.JSONDecodeError:
             payload = {}
-        evt = SimEvent(kind=msg.get("kind", "unknown"), robot_id=msg.get("robot_id") or None, h3=msg.get("h3") or None,
+        evt = SimEvent(kind=msg.get("kind", "unknown"), robot_id=msg.get("robot_id") or None, section=msg.get("section") or None,
                        mission_id=msg.get("mission_id") or None, severity=msg.get("severity") or "INFO", payload=payload,
                        stamp=_stamp(msg.get("stamp")))
         await self._on_event(evt)
@@ -298,10 +295,6 @@ class BridgeManager:
         if self.origin is not None:
             frame.lat, frame.lng = self.origin.to_latlng(frame.x, frame.y)
             frame.lat, frame.lng = round(frame.lat, 7), round(frame.lng, 7)
-            try:
-                frame.h3 = h3.latlng_to_cell(frame.lat, frame.lng, self.resolution)
-            except Exception:  # noqa: BLE001
-                frame.h3 = None
         data = frame.model_dump()
         data["t"] = "telemetry"
         r = get_redis()
@@ -317,7 +310,7 @@ class BridgeManager:
                 status = "towed"
             await fleet.update_robot(frame.robot_id, broadcast=False, x=frame.x, y=frame.y, z=frame.z, lat=frame.lat,
                                      lng=frame.lng, heading=frame.heading, speed=frame.speed, battery_pct=frame.battery_pct,
-                                     status=status, type=frame.type, h3=frame.h3, latency_ms=frame.latency_ms,
+                                     status=status, type=frame.type, latency_ms=frame.latency_ms,
                                      mission_id=frame.mission_id, last_seen=now)
         self._buffer.append(data)
         if len(self._buffer) >= settings.telemetry_persist_batch:
@@ -353,7 +346,7 @@ class BridgeManager:
         rows = [Telemetry(time=datetime.fromtimestamp(d.get("stamp") or time.time(), tz=timezone.utc), robot_id=d["robot_id"],
                           lat=d.get("lat"), lng=d.get("lng"), x=d["x"], y=d["y"], z=d["z"], heading=d["heading"],
                           speed=d["speed"], battery_pct=d["battery_pct"], battery_v=d["battery_v"],
-                          motor_temp_c=d["motor_temp_c"], cpu_load=d["cpu_load"], h3_index=d.get("h3"), status=d.get("status"))
+                          motor_temp_c=d["motor_temp_c"], cpu_load=d["cpu_load"], status=d.get("status"))
                 for d in batch]
         # de-duplicate identical (time, robot) PKs from bursts
         seen: set[tuple] = set()

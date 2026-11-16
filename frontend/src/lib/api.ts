@@ -20,9 +20,9 @@ const put = <T,>(path: string, body?: unknown) => req<T>(path, { method: 'PUT', 
 export const api = {
   farms: () => req<Farm[]>('/farms'),
   farm: (id: string) => req<Farm>(`/farms/${id}`),
-  createFarm: (body: { name: string; boundary: unknown; resolution?: number | null; target_cells?: number | null; seed?: number }) => post<Farm>('/farms', body),
+  createFarm: (body: { name: string; boundary: unknown; seed?: number }) => post<Farm>('/farms', body),
   deleteFarm: (id: string) => req<void>(`/farms/${id}`, { method: 'DELETE' }),
-  hexgrid: (id: string) => req<GeoJSON.FeatureCollection>(`/farms/${id}/hexgrid`),
+  layout: (id: string) => req<GeoJSON.FeatureCollection>(`/farms/${id}/layout`),
   infrastructure: (id: string) => req<Infrastructure[]>(`/farms/${id}/infrastructure`),
   plan: (id: string, body: Partial<PlanParams>) => post<Farm>(`/farms/${id}/plan`, body),
   resetAll: () => req<void>('/farms', { method: 'DELETE' }),
@@ -31,9 +31,10 @@ export const api = {
   world: (id: string) => req<unknown>(`/farms/${id}/world`),
 
   fleet: () => req<Robot[]>('/fleet'),
-  dispatch: (robotId: string, body: { kind?: string; target_h3?: string; lat?: number; lng?: number; note?: string }) => post<Mission>(`/fleet/${robotId}/dispatch`, body),
+  dispatch: (robotId: string, body: { kind?: string; target_section?: string; lat?: number; lng?: number; note?: string }) => post<Mission>(`/fleet/${robotId}/dispatch`, body),
   returnHome: (robotId: string) => post<Mission>(`/fleet/${robotId}/return-home`),
   route: (robotId: string, body: { waypoints: { lat: number; lng: number }[]; loop: boolean; kind?: 'patrol' | 'goto' | 'survey'; note?: string }) => post<Mission>(`/fleet/${robotId}/route`, body),
+  routePreview: (robotId: string, body: { waypoints: { lat: number; lng: number }[]; loop: boolean }) => post<GeoJSON.Feature<GeoJSON.LineString>>(`/fleet/${robotId}/route/preview`, body),
   stop: (robotId: string) => post<{ ok: boolean }>(`/fleet/${robotId}/stop`),
   resumeAuto: (robotId: string) => post<{ ok: boolean }>(`/fleet/${robotId}/resume-auto`),
   power: (robotId: string, active: boolean) => post<{ ok: boolean }>(`/fleet/${robotId}/power?active=${active}`),
@@ -56,7 +57,7 @@ export const api = {
   setView: (follow: string | null, mode: 'pan' | 'tracking' = 'pan') => post<{ ok: boolean }>(`/fleet/view?follow=${follow ?? ''}&mode=${mode}`),
 
   telemetry: (robotId: string, minutes = 10) => req<Array<Record<string, number | string | null>>>(`/telemetry/${robotId}?minutes=${minutes}`),
-  yields: () => req<{ by_crop: { crop: string; kg: number; cells: number }[]; total_kg: number; recent: unknown[] }>('/analytics/yields'),
+  yields: () => req<{ by_crop: { crop: string; kg: number; harvests: number }[]; total_kg: number; recent: unknown[] }>('/analytics/yields'),
   energy: (minutes = 30) => req<{ live: unknown[]; history: unknown[] }>(`/analytics/energy?minutes=${minutes}`),
   status: () => req<SystemStatus>('/system/status'),
 }

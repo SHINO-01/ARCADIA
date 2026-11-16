@@ -1,7 +1,7 @@
 from app.models.entities import (  # noqa: F401
     EnergyLog,
     Farm,
-    HexCell,
+    FieldSection,
     Incident,
     Infrastructure,
     Mission,

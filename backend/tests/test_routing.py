@@ -1,23 +1,30 @@
-from app.services.h3_engine import build_hexgrid
-from app.services.planner import plan_infrastructure
-from app.services.routing import RoadNetwork
-from tests.test_spatial import RECT
+import math
+
+from app.services.track_network import TrackNetwork
 
 
-def test_ground_route_uses_roads():
-    g = build_hexgrid(RECT)
-    plan = plan_infrastructure(g)
-    road = set(plan.roads)
-    cells = [{"h3": c.h3, "x": c.x, "y": c.y, "lat": c.lat, "lng": c.lng, "kind": "road" if c.h3 in road else c.kind} for c in g.cells]
-    net = RoadNetwork(cells)
-    crops = [c for c in g.cells if c.h3 not in road and c.kind == "crop"]
-    a, b = crops[0], crops[-1]
-    wps = net.route(a.x, a.y, {"x": b.x, "y": b.y, "h3": b.h3})
-    assert len(wps) >= 3
-    assert wps[-1].x == b.x and wps[-1].y == b.y
-    on_road = sum(1 for w in wps[:-1] if w.h3 in road)
-    assert on_road >= len(wps[:-1]) // 2  # the route mostly follows roads
-    # and it is never a wild detour
-    import math
-    length = math.hypot(wps[0].x - a.x, wps[0].y - a.y) + sum(math.hypot(wps[i + 1].x - wps[i].x, wps[i + 1].y - wps[i].y) for i in range(len(wps) - 1))
-    assert length < 2.0 * math.hypot(b.x - a.x, b.y - a.y) + 40
+def test_grid_network_routes_around_a_block():
+    # a 100 x 50 m block with tracks on its perimeter only: going corner to corner must follow the edge
+    tracks = [{"coords": [[0, 0], [100, 0], [100, 50], [0, 50], [0, 0]]}]
+    net = TrackNetwork(tracks)
+    pts, length = net.route(0, 0, 100, 50)
+    assert math.isclose(length, 150.0, abs_tol=0.5)
+    assert (100.0, 0.0) in pts or (0.0, 50.0) in pts
+
+
+def test_snap_and_same_segment():
+    net = TrackNetwork([{"coords": [[0, 0], [100, 0]]}])
+    pts, length = net.route(10, 3, 60, -2)  # both off-track, same segment
+    assert math.isclose(length, 50.0, abs_tol=0.1)
+    assert pts[0] == (10.0, 0.0) and pts[-1] == (60.0, 0.0)
+
+
+def test_near_miss_spur_is_joined():
+    # a yard spur that stops 0.3 mm short of the headland (millimetre rounding) must still connect
+    head = {"coords": [[0, 0], [100, 0], [100, 50], [0, 50], [0, 0]]}
+    spur = {"coords": [[60.0, -0.0003], [60.0, -20.0]]}
+    net = TrackNetwork([head, spur])
+    pts, length = net.route(0, 50, 60, -20)
+    assert pts and math.isclose(length, 60 + 50 + 20, abs_tol=0.5)
+    nodes = {tuple(n) for n in net.graph()["nodes"]}
+    assert (60.0, -20.0) in nodes

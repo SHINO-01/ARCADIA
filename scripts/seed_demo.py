@@ -23,10 +23,12 @@ def call(method, path, body=None):
 
 
 farm = call("POST", "/farms", DEMO)
-print(f"farm {farm['id']}  cells={farm['cell_count']} res={farm['h3_resolution']} area={farm['area_m2']:.0f} m2")
+print(f"farm {farm['id']}  area={farm['area_m2']:.0f} m2")
 farm = call("POST", f"/farms/{farm['id']}/plan", {})
 p = farm["plan"]
-print(f"planned: {p['k_docks']} docks, {p['k_storage']} storage, mean travel {p['mean_travel_m']} m")
+L = p["layout"]
+print(f"planned: {len(L['beds'])} beds, {L['sections']} sections, {L['tramlines']} tramlines, "
+      f"{p['k_docks']} docks, {p['k_storage']} storage, mean travel {p['mean_travel_m']} m")
 farm = call("POST", f"/farms/{farm['id']}/activate")
 print(f"activated farm {farm['id']} -> status {farm['status']}")
 print(json.dumps(call("GET", "/system/status")["bridge"], indent=1))

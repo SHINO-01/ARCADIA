@@ -54,7 +54,7 @@ class WorldFetcher(Node):
         cmd = Command(command_id="fetcher", robot_id="", kind="world_load",
                       payload_json=json.dumps({"farm_id": world["farm"]["id"], "world": world}, separators=(",", ":")))
         self.pub.publish(cmd)
-        return True, f"published world_load for farm {world['farm']['name']} ({world['hex']['count']} cells)"
+        return True, f"published world_load for farm {world['farm']['name']} ({len(world.get('sections', []))} bed sections)"
 
 
 def main(args=None) -> None:

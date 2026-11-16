@@ -32,7 +32,7 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy  # noqa: E402
 from sensor_msgs.msg import Imu  # noqa: E402
 
 from arcadia_msgs.msg import Battery, Command, Event, State  # noqa: E402
-from arcadia_sim.behaviour import BatteryModel, Behaviour  # noqa: E402
+from arcadia_sim.behaviour import WORK_SPEED, BatteryModel, Behaviour, TrackGraph, join_tracks  # noqa: E402
 
 SPECS = {
     "scout_uav": {"max_speed": 6.0, "battery_wh": 900, "idle_w": 25, "solar_skin_w": 12, "cruise_alt": 6.0, "sensor_radius_m": 9.0, "v": 22.2},
@@ -47,6 +47,12 @@ AXLE = 0.52
 
 def yaw_to_quat(yaw: float) -> Quaternion:
     return Quaternion(x=0.0, y=0.0, z=math.sin(yaw / 2), w=math.cos(yaw / 2))
+
+
+LOOKAHEAD_M = 1.5  # pure-pursuit look-ahead along the current track leg
+PAD_REACH_M = 4.5  # parked once this close to a yard pad's centre (pads are 6 x 6 m with buildings)
+YARD_CLEAR_M = 7.0  # within this of any pad centre the yard structures never stop a unit
+PAD_CLEAR_M = 9.0  # within this of the pad being parked on, the yard building ahead is not an obstacle
 
 
 class ArcadiaRobot(Node):
@@ -64,6 +70,10 @@ class ArcadiaRobot(Node):
         self.is_uav = self.robot_type == "scout_uav"
         self.active = not name.startswith("agv")  # the AGV boots powered-down (hardware cap)
         self.home_xy: tuple[float, float] | None = None
+        self.graph = TrackGraph(None)  # the farm's track network (ground units drive on tracks only)
+        self._leg_key: tuple | None = None
+        self.yard: list[tuple[float, float]] = []  # pad centres: masts, sheds and shelters stand here
+        self._leg_from: tuple[float, float] = (0.0, 0.0)
         self.docks: list[tuple[float, float]] = []
         self.irradiance = 1.0
 
@@ -128,6 +138,8 @@ class ArcadiaRobot(Node):
                 world = json.loads(msg.payload_json).get("world") or {}
                 me = next((r for r in world.get("robots", []) if r["id"] == self.robot_id), None)
                 self.docks = [(i["x"], i["y"]) for i in world.get("infrastructure", []) if str(i.get("kind", "")).endswith("dock")]
+                self.yard = [(i["x"], i["y"]) for i in world.get("infrastructure", [])]
+                self.graph = TrackGraph(world.get("track_graph"))
                 if me:
                     home = next((i for i in world.get("infrastructure", []) if i["id"] == me.get("home")), None)
                     if home:
@@ -150,13 +162,16 @@ class ArcadiaRobot(Node):
         if msg.kind in ("mission", "tow"):
             if msg.kind == "tow":
                 p["kind"] = "tow"
+            if not self.is_uav:  # reach the first waypoint along the tracks, from where we really are
+                p = join_tracks(p, self.graph, pos[0], pos[1])
             self.b.start_mission(p, self.home_xy)
         elif msg.kind == "cancel":
             self.b.cancel()
         elif msg.kind == "return_home":
-            if self.home_xy:
+            route = self.dock_route(pos)
+            if route:
                 self.b.start_mission({"mission_id": p.get("mission_id", ""), "kind": "charge",
-                                      "waypoints": [{"x": self.home_xy[0], "y": self.home_xy[1], "z": 0.0}]}, self.home_xy)
+                                      "waypoints": [{"x": x, "y": y, "z": 0.0} for x, y in route]}, route[-1])
         elif msg.kind == "chaos":
             self.b.inject(p.get("fault", "motor_jam"), p.get("params", {}), pos[:2])
             if p.get("fault") == "motor_jam" and self.motors:
@@ -188,10 +203,30 @@ class ArcadiaRobot(Node):
     def yaw(self) -> float:
         return self.imu.getRollPitchYaw()[2]
 
+    def dock_route(self, pos) -> list[tuple[float, float]]:
+        """Route to the nearest charging dock: straight for the UAV, by track length for ground units
+        (the dock with the shortest straight line can be the far side of a bed)."""
+        docks = self.docks or ([self.home_xy] if self.home_xy else [])
+        if not docks:
+            return []
+        if self.is_uav or not self.graph:
+            d = min(docks, key=lambda d: (d[0] - pos[0]) ** 2 + (d[1] - pos[1]) ** 2)
+            return [d]
+        best: list[tuple[float, float]] = []
+        best_len = math.inf
+        for d in docks:
+            r = self.graph.route(pos[0], pos[1], d[0], d[1])
+            if not r:
+                continue
+            length = math.dist(pos[:2], r[0]) + sum(math.dist(a, b) for a, b in zip(r, r[1:]))
+            if length < best_len:
+                best, best_len = r + [d], length
+        return best
+
     def emit(self, e: dict) -> None:
         msg = Event()
         msg.stamp = self.get_clock().now().to_msg()
-        msg.kind = e["kind"]; msg.robot_id = e.get("robot_id", self.robot_id); msg.h3 = e.get("h3", "") or ""
+        msg.kind = e["kind"]; msg.robot_id = e.get("robot_id", self.robot_id); msg.section = e.get("section", "") or ""
         msg.mission_id = e.get("mission_id", "") or ""; msg.severity = e.get("severity", "INFO")
         msg.payload_json = json.dumps(e.get("payload", {}), separators=(",", ":"))
         self.pub_event.publish(msg)
@@ -215,41 +250,77 @@ class ArcadiaRobot(Node):
         m = self.b.mission or {}
         approaching_robot = m.get("kind") == "tow" and self.b.tow_phase == 0 and self.b.wp_i >= self.b.pickup_index
         last_wp = self.b.wp_i == len(m.get("waypoints") or []) - 1
-        parking = m.get("kind") in ("charge", "tow") and last_wp          # dock pads are 6 x 6 m
-        reach = 3.0 if approaching_robot else 2.5 if parking else 0.8     # winch cable / pad / waypoint tolerance
+        # Yard pads carry buildings (the repair shelter and storage shed are ~7 m wide): a unit parking
+        # there has arrived once it is on the pad apron, and the building ahead is not an obstacle.
+        parking = m.get("kind") in ("charge", "tow") and last_wp
+        reach = 3.0 if approaching_robot else PAD_REACH_M if parking else 0.8  # winch cable / pad apron / waypoint
         if dist < reach:
             self.set_wheels(0.0, 0.0)
             self.b.reached(target)
             return 0.0
-        desired = math.atan2(dy, dx)
+        # Path following, not goal seeking: steer at a look-ahead point on the leg from the previous
+        # waypoint to this one, so any sideways error (after a junction turn, wheel slip, a jammed
+        # tow) is pulled back onto the track centre line instead of persisting for a 200 m tramline.
+        ax_, ay_ = self.leg_start(m, pos)
+        lx, ly = tx - ax_, ty - ay_
+        leg = math.hypot(lx, ly)
+        if leg > 1e-3:
+            ux, uy = lx / leg, ly / leg
+            along = (pos[0] - ax_) * ux + (pos[1] - ay_) * uy
+            ahead = min(leg, max(0.0, along) + LOOKAHEAD_M)
+            gx, gy = ax_ + ux * ahead, ay_ + uy * ahead
+        else:
+            gx, gy = tx, ty
+        desired = math.atan2(gy - pos[1], gx - pos[0])
         err = math.atan2(math.sin(desired - yaw), math.cos(desired - yaw))
-        # LiDAR obstacle avoidance: steer away from the closest return in the front arc
-        # (disabled inside the last few metres so the goal itself cannot repel the robot)
-        avoid = 0.0
-        if self.lidar is not None and dist > 3.5:
+        # Controlled traffic: on a tramline the vehicle must never swerve onto the beds. Anything in
+        # a narrow cone straight ahead (another unit, a person) makes it stop and wait; bed edges
+        # flanking the lane fall outside the cone.
+        # The harvest pass is the one time a unit drives on a bed: the crop ahead is what it cuts,
+        # not an obstacle.
+        cutting = self.b.on_pass and m.get("kind") == "harvest"
+        blocked = False
+        # Yard pads carry fixed structures (solar masts, wind towers, sheds): on or next to a pad they
+        # are not obstacles, whether the unit is arriving or leaving.
+        on_yard = any((pos[0] - x) ** 2 + (pos[1] - y) ** 2 < YARD_CLEAR_M ** 2 for x, y in self.yard)
+        if self.lidar is not None and dist > 3.5 and not cutting and not on_yard and not (parking and dist < PAD_CLEAR_M):
             ranges = self.lidar.getRangeImage()
             n = len(ranges)
             if n:
                 fov = self.lidar.getFov()
-                best, best_i = 1e9, -1
                 for i in range(n):
                     ang = -fov / 2 + fov * i / max(1, n - 1)
-                    if abs(ang) < math.radians(50) and 0.15 < ranges[i] < best:
-                        best, best_i = ranges[i], i
-                if best < 1.6 and best_i >= 0:
-                    ang = -fov / 2 + fov * best_i / max(1, n - 1)
-                    avoid = (1.6 - best) / 1.6 * (1.0 if ang < 0 else -1.0) * 1.8
+                    if abs(ang) < math.radians(15) and 0.15 < ranges[i] < 1.2:
+                        blocked = True
+                        break
         vmax = self.spec["max_speed"]
+        if self.b.on_pass:
+            vmax = min(vmax, WORK_SPEED)  # tool engaged on the work pass
         if abs(err) > 0.5:
-            # Large heading error: pivot in place (skid-steer cannot out-turn forward motion on a heavy chassis)
+            # Large heading error (junction turn): pivot in place, the wheels stay on the track
             v, w = 0.0, math.copysign(1.6, err)
         else:
             v = vmax * (1.0 - abs(err) / 0.5 * 0.6) * min(1.0, dist / 2.0 + 0.3)
-            w = 2.0 * err + avoid
+            w = 2.0 * err
+        if blocked:
+            v = 0.0
         if self.manual_twist and self.b.sim_time < self.manual_until:
             v, w = self.manual_twist.linear.x, self.manual_twist.angular.z
         self.set_wheels(v, w)
         return v
+
+    def leg_start(self, m: dict, pos) -> tuple[float, float]:
+        """Start of the current leg: the previous waypoint, or where the unit was when it set off."""
+        key = (m.get("mission_id"), self.b.wp_i)
+        if key != self._leg_key:
+            wps = m.get("waypoints") or []
+            if 0 < self.b.wp_i <= len(wps):
+                prev = wps[self.b.wp_i - 1]
+                self._leg_from = (prev["x"], prev["y"])
+            else:
+                self._leg_from = (pos[0], pos[1])
+            self._leg_key = key
+        return self._leg_from
 
     def set_wheels(self, v: float, w: float) -> None:
         vl = (v - w * AXLE / 2) / WHEEL_RADIUS
@@ -304,15 +375,13 @@ class ArcadiaRobot(Node):
                     self.set_wheels(0.0, 0.0)
                 if self.b.sim_time - last_batt >= 0.5:
                     last_batt = self.b.sim_time
+                    self.publish_odom(pos, yaw, 0.0)  # parked units still report where they are
                     self.publish_state(0.0)
                     self.publish_diag(pos, 0.0)
                 self.b.sim_time += self.dt
                 continue
-            if self.docks:  # reflex heads for the NEAREST charging dock, not necessarily home
-                nearest = min(self.docks, key=lambda d: (d[0] - pos[0]) ** 2 + (d[1] - pos[1]) ** 2)
-                self.b.low_battery_rth(nearest)
-            else:
-                self.b.low_battery_rth(self.home_xy)
+            # reflex: nearest charging dock by travel distance, along the tracks for ground units
+            self.b.low_battery_rth(lambda: self.dock_route(pos))
             target = self.b.tick(self.dt, pos, self.irradiance)
             speed = self.fly_uav(target, pos) if self.is_uav else self.drive_ugv(target, pos, yaw)
             # torque-coupled battery drain: mechanical power = sum(|torque_i * omega_i|) at the wheels,

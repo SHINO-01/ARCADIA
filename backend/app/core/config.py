@@ -32,9 +32,6 @@ class Settings(BaseSettings):
     telemetry_retention_days: int = 14
 
     # Spatial engine
-    h3_target_cells: int = 320
-    h3_min_resolution: int = 9
-    h3_max_resolution: int = 13
 
     # Fleet (hardware constraint: max 2 active robots on the IdeaPad)
     max_active_robots: int = 2

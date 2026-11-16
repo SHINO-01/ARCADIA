@@ -1,59 +1,145 @@
+"""Every operation end to end in the headless twin, with the controlled-traffic rule checked on
+every telemetry frame: ground units are never on a bed, except a harvester on its harvest pass."""
 import asyncio
 
 import pytest
+from shapely.geometry import Point
 
 from app.bridge.headless_sim import HeadlessTwin
 from app.schemas import Command
-from app.services.h3_engine import build_hexgrid
-from app.services.planner import plan_infrastructure
-from app.services.world_builder import build_world_config
-from tests.test_spatial import RECT
+from app.services.dispatcher import ground_route, section_mission
+from tests.farmkit import demo
+
+
+async def _until(events, pred, steps=2000):
+    for _ in range(steps):
+        await asyncio.sleep(0.01)
+        if pred(events):
+            return True
+    return False
+
+
+def _done(mid):
+    return lambda ev: any(e.kind in ("mission_complete", "mission_failed") and e.mission_id == mid for e in ev)
+
+
+def _mission(mid, kind, wps, **extra):
+    return {"mission_id": mid, "kind": kind, "waypoints": wps, **extra}
 
 
 @pytest.mark.asyncio
-async def test_twin_runs_survey_and_seed_missions():
-    frames, events = [], []
+async def test_every_operation_respects_the_beds():
+    d = demo()
+    frames, events, violations, cutting = [], [], [], []
+    harvest_pass: dict[str, str] = {}  # mission_id -> section it may drive on
+    crop = d.crop.buffer(-0.3)
 
     async def on_t(f):
         frames.append(f)
+        if f.type == "scout_uav" or f.status in ("towed",):
+            return
+        p = Point(f.x, f.y)
+        if not crop.contains(p):
+            return
+        sec = harvest_pass.get(f.mission_id or "")
+        if sec and d.polys[sec].buffer(0.3).contains(p):
+            cutting.append(f.mission_id)
+            return
+        violations.append((f.robot_id, f.mission_id, round(f.x, 1), round(f.y, 1)))
 
     async def on_e(e):
         events.append(e)
 
-    g = build_hexgrid(RECT)
-    world = build_world_config("f", "Farm", g, plan_infrastructure(g))
-    twin = HeadlessTwin(on_t, on_e, hz=50.0, telemetry_hz=10.0)
-    twin.load_world(world)
+    twin = HeadlessTwin(on_t, on_e, hz=50.0, telemetry_hz=25.0)
+    twin.load_world(d.world)
+    for c in twin.sections.values():
+        c.weeds = False  # deterministic start
     twin.speed_factor = 40.0
     twin.start()
+    ugv, agv = twin.robots["ugv-1"], twin.robots["agv-1"]
+    secs = list(d.secs.values())
+    a, b = secs[3], secs[len(secs) // 2]
     try:
-        cells = [c for c in world["hex"]["cells"] if c["kind"] == "crop"][:6]
-        await twin.handle_command(Command(kind="mission", robot_id="uav-1", payload={
-            "mission_id": "m1", "kind": "survey", "waypoints": [{"x": c["x"], "y": c["y"], "z": 6.0} for c in cells]}))
-        await twin.handle_command(Command(kind="mission", robot_id="ugv-1", payload={
-            "mission_id": "m2", "kind": "seed", "waypoints": [{"x": cells[0]["x"], "y": cells[0]["y"], "z": 0.0, "h3": cells[0]["h3"]}]}))
-        for _ in range(400):
-            await asyncio.sleep(0.05)
-            kinds = {e.kind for e in events}
-            if {"mission_complete", "seeded", "cell_observed"} <= kinds and \
-                    len([e for e in events if e.kind == "mission_complete"]) >= 2:
-                break
-        kinds = [e.kind for e in events]
-        assert "mission_started" in kinds
-        assert "cell_observed" in kinds, kinds
-        assert "seeded" in kinds, kinds
-        assert kinds.count("mission_complete") >= 2, kinds
-        assert any(f.robot_id == "uav-1" and f.speed > 0 for f in frames)
-        # chaos: motor jam strands the UGV, tow recovers it
+        # survey: the scout flies straight over the beds (airborne, 6 m up)
+        await twin.handle_command(Command(kind="mission", robot_id="uav-1", payload=_mission(
+            "survey", "survey", [{"x": s.x, "y": s.y, "z": 6.0} for s in secs[:6]])))
+        # seed section a from its tramline
+        wps, pf, _ = section_mission(d.farm, a, ugv.x, ugv.y, "seed")
+        await twin.handle_command(Command(kind="mission", robot_id="ugv-1", payload=_mission(
+            "seed", "seed", wps, section=a.id, pass_from=pf)))
+        assert await _until(events, _done("seed")), [e.kind for e in events][-8:]
+        assert twin.sections[a.id].state == "seeded"
+        assert await _until(events, _done("survey"))
+        assert any(e.kind == "section_observed" for e in events)
+
+        # weed section a (now planted) from the other end
+        twin.sections[a.id].weeds = True
+        wps, pf, _ = section_mission(d.farm, a, ugv.x, ugv.y, "weed")
+        await twin.handle_command(Command(kind="mission", robot_id="ugv-1", payload=_mission(
+            "weed", "weed", wps, section=a.id, pass_from=pf)))
+        assert await _until(events, _done("weed"))
+        assert not twin.sections[a.id].weeds
+
+        # harvest: let the crop ripen, then the one pass that drives on a bed
+        twin.sections[a.id].state = "ripe"
+        wps, pf, _ = section_mission(d.farm, a, ugv.x, ugv.y, "harvest")
+        harvest_pass["harvest"] = a.id
+        await twin.handle_command(Command(kind="mission", robot_id="ugv-1", payload=_mission(
+            "harvest", "harvest", wps, section=a.id, pass_from=pf)))
+        assert await _until(events, _done("harvest"))
+        h = next(e for e in events if e.kind == "harvested")
+        assert h.payload["section"] == a.id and h.payload["was"] == "ripe" and h.payload["kg"] > 0
+        assert twin.sections[a.id].state == "harvested"
+
+        # an early cut (operator override on a growing crop) yields nothing
+        twin.sections[b.id].state, twin.sections[b.id].t_state = "seeded", -1e9  # stays unripe at 40x
+        wps, pf, _ = section_mission(d.farm, b, ugv.x, ugv.y, "harvest")
+        harvest_pass["early"] = b.id
+        await twin.handle_command(Command(kind="mission", robot_id="ugv-1", payload=_mission(
+            "early", "harvest", wps, section=b.id, pass_from=pf)))
+        assert await _until(events, _done("early"))
+        early = [e for e in events if e.kind == "harvested"][-1]
+        assert early.payload["was"] == "seeded" and early.payload["kg"] == 0.0
+
+        # goto aimed at the middle of a bed: snapped onto a track
+        wps, _ = ground_route(d.farm, ugv.x, ugv.y, secs[-5].x, secs[-5].y)
+        await twin.handle_command(Command(kind="mission", robot_id="ugv-1", payload=_mission("goto", "goto", wps)))
+        assert await _until(events, _done("goto"))
+
+        # ground patrol: two clicks inside beds, looped; each leg on the tracks
+        legs, cx, cy = [], ugv.x, ugv.y
+        for s in (secs[10], secs[40], secs[10]):
+            leg, _ = ground_route(d.farm, cx, cy, s.x, s.y)
+            legs += leg
+            cx, cy = leg[-1]["x"], leg[-1]["y"]
+        await twin.handle_command(Command(kind="mission", robot_id="ugv-1", payload=_mission("patrol", "patrol", legs, loop=True)))
+        assert await _until(events, lambda ev: twin.robots["ugv-1"].mission and twin.robots["ugv-1"].mission.get("_laps", 0) >= 1)
+        await twin.handle_command(Command(kind="cancel", robot_id="ugv-1"))
+
+        # return home: nearest dock along the tracks, then charge
+        await twin.handle_command(Command(kind="return_home", robot_id="ugv-1", payload={"mission_id": "home"}))
+        assert await _until(events, lambda ev: any(e.kind == "charging_started" and e.robot_id == "ugv-1" for e in ev))
+
+        # breakdown + tow, planned from a STALE AGV position (the far corner of the field): the
+        # unit still joins the tracks from where it really is and never crosses a bed
+        await asyncio.sleep(0.5)
+        far = secs[-1]
+        wps, _ = ground_route(d.farm, ugv.x, ugv.y, far.passes[0]["start"][0], far.passes[0]["start"][1])
+        await twin.handle_command(Command(kind="mission", robot_id="ugv-1", payload=_mission("out", "goto", wps)))
+        assert await _until(events, _done("out"))
         await twin.handle_command(Command(kind="chaos", robot_id="ugv-1", payload={"fault": "motor_jam", "params": {}}))
-        assert events[-1].kind == "fault_detected"
         await twin.handle_command(Command(kind="set_active", robot_id="agv-1", payload={"active": True}))
-        await twin.handle_command(Command(kind="tow", robot_id="agv-1", payload={"mission_id": "m3", "target_robot": "ugv-1"}))
-        for _ in range(600):
-            await asyncio.sleep(0.05)
-            if any(e.kind == "tow_complete" for e in events):
-                break
+        stale = d.secs[secs[0].id]
+        to_unit, _ = ground_route(d.farm, stale.passes[0]["end"][0], stale.passes[0]["end"][1], ugv.x, ugv.y)
+        rep = d.plan.repair[0]
+        to_bay, _ = ground_route(d.farm, ugv.x, ugv.y, rep.x, rep.y)
+        await twin.handle_command(Command(kind="tow", robot_id="agv-1", payload=_mission(
+            "tow", "tow", to_unit + to_bay, target_robot="ugv-1", pickup_index=len(to_unit) - 1)))
+        assert await _until(events, lambda ev: any(e.kind == "tow_complete" for e in ev), steps=3000)
         assert any(e.kind == "tow_attached" for e in events)
-        assert any(e.kind == "tow_complete" for e in events), [e.kind for e in events][-10:]
+        assert abs(agv.x - rep.x) < 4 and abs(agv.y - rep.y) < 4
     finally:
         await twin.stop()
+    assert not violations, violations[:10]
+    assert cutting.count("harvest") > 5  # the check sees bed frames: the harvester really drove the bed
+    assert len(frames) > 200

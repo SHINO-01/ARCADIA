@@ -3,13 +3,124 @@ torque-coupled battery model, fault handling. Pure Python (no Webots/ROS imports
 unit-testable and mirrors the headless twin in the backend."""
 from __future__ import annotations
 
+import heapq
 import math
 import time
 from dataclasses import dataclass, field
 
 TIME_COMPRESSION = 12.0
-WORK_S = {"seed": 6.0, "weed": 5.0, "harvest": 8.0}
+WORK_KINDS = ("seed", "weed", "harvest")
+WORK_EVENT = {"seed": "seeded", "weed": "weeded", "harvest": "harvested"}
+WORK_SPEED = 0.5  # m/s while a tool is engaged on a work pass
 BATTERY_RESERVE_PCT = 22.0  # below this a robot abandons its mission and returns to its dock on its own
+
+
+class TrackGraph:
+    """On-board copy of the farm's track network (world_config["track_graph"]): nodes are track
+    junctions and bends, edges the straight track legs between them. Ground units use it to reach
+    a mission's first waypoint, or a dock on their own, without ever cutting across a bed."""
+
+    def __init__(self, graph: dict | None):
+        g = graph or {}
+        self.nodes: list[tuple[float, float]] = [(float(x), float(y)) for x, y in g.get("nodes", [])]
+        self.edges: list[tuple[int, int]] = [(int(a), int(b)) for a, b in g.get("edges", [])]
+        self.adj: dict[int, list[tuple[int, float]]] = {}
+        for a, b in self.edges:
+            d = math.dist(self.nodes[a], self.nodes[b])
+            self.adj.setdefault(a, []).append((b, d))
+            self.adj.setdefault(b, []).append((a, d))
+
+    def __bool__(self) -> bool:
+        return bool(self.edges)
+
+    def snap(self, x: float, y: float) -> tuple[tuple[float, float], int, float]:
+        """Nearest point on any track leg: (point, edge index, distance)."""
+        best = ((x, y), -1, math.inf)
+        for i, (a, b) in enumerate(self.edges):
+            (ax, ay), (bx, by) = self.nodes[a], self.nodes[b]
+            dx, dy = bx - ax, by - ay
+            L2 = dx * dx + dy * dy
+            t = 0.0 if L2 == 0 else max(0.0, min(1.0, ((x - ax) * dx + (y - ay) * dy) / L2))
+            px, py = ax + t * dx, ay + t * dy
+            d = math.hypot(x - px, y - py)
+            if d < best[2]:
+                best = ((px, py), i, d)
+        return best
+
+    def route(self, sx: float, sy: float, tx: float, ty: float) -> list[tuple[float, float]]:
+        """Shortest on-track polyline from (sx, sy) to (tx, ty), both snapped onto the network.
+        Returns the turn points, starting with the start's snap point (empty if no route)."""
+        if not self.edges:
+            return []
+        sp, se, _ = self.snap(sx, sy)
+        tp, te, _ = self.snap(tx, ty)
+        S, T = -1, -2  # temporary nodes for the snapped start and goal
+        pos = {S: sp, T: tp}
+        extra: dict[int, list[tuple[int, float]]] = {S: [], T: []}
+
+        def link(n: int, e: int) -> None:
+            for m in self.edges[e]:
+                d = math.dist(pos[n], self.nodes[m])
+                extra[n].append((m, d))
+                extra.setdefault(m, []).append((n, d))
+
+        link(S, se)
+        link(T, te)
+        if se == te:
+            d = math.dist(sp, tp)
+            extra[S].append((T, d))
+            extra[T].append((S, d))
+        dist, prev, pq = {S: 0.0}, {S: None}, [(0.0, S)]
+        while pq:
+            d, u = heapq.heappop(pq)
+            if u == T:
+                break
+            if d > dist.get(u, math.inf):
+                continue
+            for v, w in self.adj.get(u, []) + extra.get(u, []):
+                if d + w < dist.get(v, math.inf):
+                    dist[v], prev[v] = d + w, u
+                    heapq.heappush(pq, (d + w, v))
+        if T not in prev:
+            return []
+        path = [T]
+        while prev[path[-1]] is not None:
+            path.append(prev[path[-1]])
+        pts = [pos[n] if n < 0 else self.nodes[n] for n in reversed(path)]
+        return _turns(pts)
+
+
+def _turns(pts: list[tuple[float, float]], tol: float = 0.25) -> list[tuple[float, float]]:
+    """Keep only the turn points of a polyline (and drop zero-length steps)."""
+    out: list[tuple[float, float]] = []
+    for p in pts:
+        if out and math.dist(p, out[-1]) < 0.05:
+            continue
+        if len(out) >= 2:
+            (ax, ay), (bx, by) = out[-2], out[-1]
+            L = math.dist(out[-2], p)
+            if L > 1e-6 and abs((p[0] - ax) * (ay - by) - (ax - bx) * (p[1] - ay)) / L <= tol:
+                out[-1] = p
+                continue
+        out.append(p)
+    return out
+
+
+def join_tracks(m: dict, graph: TrackGraph, x: float, y: float, near: float = 1.5) -> dict:
+    """Prepend an on-track approach from (x, y) to a ground mission's first waypoint, so a unit
+    whose mission was planned from a stale pose still reaches it along the tracks. Shifts the
+    indices that refer into the waypoint list."""
+    wps = list(m.get("waypoints") or [])
+    if not wps or not graph or math.hypot(wps[0]["x"] - x, wps[0]["y"] - y) < near:
+        return m
+    lead = [{"x": px, "y": py, "z": 0.0} for px, py in graph.route(x, y, wps[0]["x"], wps[0]["y"])[:-1]]
+    if not lead:
+        return m
+    out = {**m, "waypoints": lead + wps}
+    for k in ("pass_from", "pickup_index"):
+        if k in out:
+            out[k] = int(out[k]) + len(lead)
+    return out
 
 
 @dataclass
@@ -71,13 +182,20 @@ class Behaviour:
         return self.fault is not None and self.fault.kind in ("motor_jam", "battery_drop", "stuck_terrain")
 
     @property
+    def on_pass(self) -> bool:
+        """True while on the work pass of the target bed section (tool engaged)."""
+        m = self.mission or {}
+        return m.get("kind") in WORK_KINDS and self.wp_i > int(m.get("pass_from", 10 ** 6))
+
+    @property
     def pickup_index(self) -> int:
         return int((self.mission or {}).get("pickup_index", 0))
 
     # ------------------------------------------------------------- events
-    def emit(self, event: str, severity: str = "INFO", h3: str = "", **payload) -> None:
+    def emit(self, event: str, severity: str = "INFO", **payload) -> None:
         """Queue a domain event. Payload keys are free-form (e.g. kind=<mission kind>)."""
-        self.events.append({"kind": event, "robot_id": self.robot_id, "h3": h3, "severity": severity,
+        self.events.append({"kind": event, "robot_id": self.robot_id, "section": str(payload.get("section", "") or ""),
+                            "severity": severity,
                             "mission_id": (self.mission or {}).get("mission_id", "") if self.mission else payload.pop("mission_id", ""),
                             "payload": payload})
 
@@ -151,11 +269,15 @@ class Behaviour:
             return None
         return wps[self.wp_i]
 
-    def low_battery_rth(self, home_xy: tuple[float, float] | None) -> bool:
-        """Autonomous reflex: abandon the current task and head for the charging dock."""
-        if home_xy is None or self.immobilised or self.status in ("charging", "offline", "returning", "towing"):
+    def low_battery_rth(self, plan_route) -> bool:
+        """Autonomous reflex: abandon the current task and head for a charging dock.
+        plan_route() -> list of (x, y) ending at the dock (ground units: along the tracks)."""
+        if self.immobilised or self.status in ("charging", "offline", "returning", "towing"):
             return False
         if self.battery.pct > BATTERY_RESERVE_PCT:
+            return False
+        route = plan_route()
+        if not route:
             return False
         mid = self.mission.get("mission_id", "") if self.mission else ""
         kind = self.mission.get("kind") if self.mission else None
@@ -163,7 +285,7 @@ class Behaviour:
             self.mission = None
             self.emit("mission_failed", "WARN", mission_id=mid, reason="low battery - returning to dock", kind=kind)
         self.start_mission({"mission_id": f"rth-{self.robot_id}-{int(self.sim_time)}", "kind": "charge",
-                            "waypoints": [{"x": home_xy[0], "y": home_xy[1], "z": 0.0}]}, home_xy)
+                            "waypoints": [{"x": x, "y": y, "z": 0.0} for x, y in route]}, route[-1])
         return True
 
     def tick(self, dt: float, pos: tuple[float, float, float], irradiance: float) -> dict | None:
@@ -206,26 +328,22 @@ class Behaviour:
                 self.wp_i = 0
                 m["_laps"] = int(m.get("_laps", 0)) + 1
             return
-        elif kind in WORK_S and last:
-            self.work_until = self.sim_time + WORK_S[kind]
-            self.pending_work = wp
         self.wp_i += 1
 
     def _complete(self, pos) -> None:
         m = self.mission
         kind = m.get("kind")
         extra: dict = {"kind": kind}
-        if kind in WORK_S:
-            wp = self.pending_work or ((m.get("waypoints") or [None])[-1]) or {}
-            h3 = wp.get("h3", "") or m.get("target_h3", "")
-            extra["h3"] = h3
-            # The supervisor owns ground truth; it listens to these and mutates the crops.
-            self.emit({"seed": "seeded", "weed": "weeded", "harvest": "harvested"}[kind], h3=h3, crop=m.get("crop"))
+        if kind in WORK_KINDS:
+            # The work pass covered the whole bed section (seed/weed from the tramline, harvest down
+            # the bed). The supervisor owns ground truth: it listens for these events.
+            extra["section"] = m.get("section", "")
+            self.emit(WORK_EVENT[kind], section=m.get("section", ""), crop=m.get("crop"))
         elif kind == "tow":
             self.emit("tow_complete", target=self.towing)
             self.towing = None
         elif kind in ("survey", "patrol"):
-            extra["cells_observed"] = len(self.visited)
+            extra["sections_observed"] = len(self.visited)
             if kind == "patrol":
                 extra["laps"] = int(m.get("_laps", 0))
         mid = m.get("mission_id", "")

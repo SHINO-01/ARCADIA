@@ -30,8 +30,6 @@ class Farm(Base):
     centroid_lat: Mapped[float] = mapped_column(Float, nullable=False)
     centroid_lng: Mapped[float] = mapped_column(Float, nullable=False)
     area_m2: Mapped[float] = mapped_column(Float, nullable=False)
-    h3_resolution: Mapped[int] = mapped_column(Integer, nullable=False)
-    cell_count: Mapped[int] = mapped_column(Integer, default=0)
     status: Mapped[str] = mapped_column(String(24), default="mapped")  # mapped|planned|active|archived
     plan: Mapped[dict | None] = mapped_column(JSONType, nullable=True)  # k-means report
     world_config: Mapped[dict | None] = mapped_column(JSONType, nullable=True)  # payload for Webots spawner
@@ -41,36 +39,34 @@ class Farm(Base):
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
 
-    cells: Mapped[list[HexCell]] = relationship(back_populates="farm", cascade="all, delete-orphan")
     infrastructure: Mapped[list[Infrastructure]] = relationship(
         back_populates="farm", cascade="all, delete-orphan"
     )
 
 
-class HexCell(Base):
-    __tablename__ = "hex_cells"
-    __table_args__ = (Index("ix_hex_cells_farm_h3", "farm_id", "h3_index", unique=True),)
+class FieldSection(Base):
+    """A bed section: the agronomic management unit (state, observation, work)."""
+    __tablename__ = "sections"
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    farm_id: Mapped[str] = mapped_column(ForeignKey("farms.id", ondelete="CASCADE"), index=True)
-    h3_index: Mapped[str] = mapped_column(String(16), nullable=False)
-    lat: Mapped[float] = mapped_column(Float, nullable=False)
-    lng: Mapped[float] = mapped_column(Float, nullable=False)
-    x: Mapped[float] = mapped_column(Float, nullable=False)  # local ENU metres (east)
-    y: Mapped[float] = mapped_column(Float, nullable=False)  # local ENU metres (north)
-    kind: Mapped[str] = mapped_column(String(16), default="crop")  # crop|road|dock|storage|repair
-    bed_id: Mapped[str | None] = mapped_column(String(16), nullable=True)
-    crop_type: Mapped[str | None] = mapped_column(String(24), nullable=True)
+    farm_id: Mapped[str] = mapped_column(ForeignKey("farms.id", ondelete="CASCADE"), primary_key=True)
+    id: Mapped[str] = mapped_column(String(16), primary_key=True)   # e.g. "AB-03"
+    bed_id: Mapped[str] = mapped_column(String(16), index=True)
+    crop: Mapped[str] = mapped_column(String(24))
     state: Mapped[str] = mapped_column(String(16), default="fallow")  # fallow|seeded|growing|ripe|harvested
     weeds: Mapped[bool] = mapped_column(Boolean, default=False)
-    soil_moisture: Mapped[float] = mapped_column(Float, default=0.5)
+    moisture: Mapped[float] = mapped_column(Float, default=0.5)
     health: Mapped[float] = mapped_column(Float, default=1.0)
+    x: Mapped[float] = mapped_column(Float)
+    y: Mapped[float] = mapped_column(Float)
+    lat: Mapped[float] = mapped_column(Float)
+    lng: Mapped[float] = mapped_column(Float)
+    length: Mapped[float] = mapped_column(Float)
+    width: Mapped[float] = mapped_column(Float)
+    angle: Mapped[float] = mapped_column(Float)
+    polygon: Mapped[list] = mapped_column(JSONType)   # ENU ring
+    passes: Mapped[list] = mapped_column(JSONType)    # tramline work passes
     last_survey_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
-    )
-
-    farm: Mapped[Farm] = relationship(back_populates="cells")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
 
 class Infrastructure(Base):
@@ -79,8 +75,7 @@ class Infrastructure(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
     farm_id: Mapped[str] = mapped_column(ForeignKey("farms.id", ondelete="CASCADE"), index=True)
     slug: Mapped[str] = mapped_column(String(32), nullable=False)  # dock-1, storage-1
-    kind: Mapped[str] = mapped_column(String(24), nullable=False)  # solar_dock|wind_dock|storage|silo
-    h3_index: Mapped[str] = mapped_column(String(16), nullable=False)
+    kind: Mapped[str] = mapped_column(String(24), nullable=False)  # solar_dock|wind_dock|storage|repair_station
     lat: Mapped[float] = mapped_column(Float, nullable=False)
     lng: Mapped[float] = mapped_column(Float, nullable=False)
     x: Mapped[float] = mapped_column(Float, nullable=False)
@@ -135,7 +130,6 @@ class Telemetry(Base):
     battery_v: Mapped[float] = mapped_column(Float)
     motor_temp_c: Mapped[float] = mapped_column(Float)
     cpu_load: Mapped[float] = mapped_column(Float)
-    h3_index: Mapped[str | None] = mapped_column(String(16))
     status: Mapped[str | None] = mapped_column(String(16))
 
 
@@ -167,8 +161,8 @@ class Mission(Base):
     status: Mapped[str] = mapped_column(String(16), default="queued")
     priority: Mapped[int] = mapped_column(Integer, default=5)
     source: Mapped[str] = mapped_column(String(16), default="auto")  # auto|operator|recovery
-    target_h3: Mapped[str | None] = mapped_column(String(16), nullable=True)
-    waypoints: Mapped[list | None] = mapped_column(JSONType, nullable=True)  # [{x,y,z,lat,lng,h3}]
+    target_section: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    waypoints: Mapped[list | None] = mapped_column(JSONType, nullable=True)  # [{x,y,z,lat,lng}]
     payload: Mapped[dict | None] = mapped_column(JSONType, nullable=True)
     result: Mapped[dict | None] = mapped_column(JSONType, nullable=True)
     celery_task_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
@@ -183,7 +177,7 @@ class YieldRecord(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     farm_id: Mapped[str] = mapped_column(String(36), index=True)
-    h3_index: Mapped[str] = mapped_column(String(16), index=True)
+    section_id: Mapped[str | None] = mapped_column(String(16), index=True, nullable=True)
     crop_type: Mapped[str] = mapped_column(String(24))
     kg: Mapped[float] = mapped_column(Float)
     robot_id: Mapped[str | None] = mapped_column(String(32), nullable=True)

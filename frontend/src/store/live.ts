@@ -20,7 +20,8 @@ export interface LiveRobot {
 
 /** Render-free registry (not in React state) */
 export const liveRegistry = new Map<string, LiveRobot>()
-export const cellOverrides = new Map<string, Record<string, unknown>>()
+/** Live bed-section state pushed by the backend ('section' messages), keyed by section id. */
+export const sectionOverrides = new Map<string, Record<string, unknown>>()
 let cellVersion = 0
 export const getCellVersion = () => cellVersion
 
@@ -104,7 +105,7 @@ export const useLive = create<LiveState>((set, get) => ({
           }
           case 'fleet': set((s) => ({ fleet: { ...s.fleet, [m.robot.id]: { ...s.fleet[m.robot.id], ...m.robot } } })); break
           case 'fleet_reset': {
-            liveRegistry.clear(); cellOverrides.clear()
+            liveRegistry.clear(); sectionOverrides.clear()
             set({ fleet: Object.fromEntries((m.robots as Robot[]).map((r) => [r.id, r])), feed: [], cellVersion: ++cellVersion })
             break
           }
@@ -116,16 +117,16 @@ export const useLive = create<LiveState>((set, get) => ({
             for (const [rid, diag] of Object.entries(m.robots as Record<string, Robot['diagnostics']>)) if (fleet[rid]) fleet[rid] = { ...fleet[rid], diagnostics: diag }
             return { fleet }
           }); break
-          case 'cell': {
-            const { t: _t, h3, ...rest } = m
-            cellOverrides.set(h3, { ...(cellOverrides.get(h3) ?? {}), ...rest })
+          case 'section': {
+            const { t: _t, id, ...rest } = m
+            sectionOverrides.set(id, { ...(sectionOverrides.get(id) ?? {}), ...rest })
             cellVersion++
             set({ cellVersion })
             break
           }
           case 'event': {
             const e = m.event
-            if (!['cell_observed'].includes(e.kind)) pushFeed({ kind: e.kind, robot_id: e.robot_id, h3: e.h3, severity: e.severity, payload: e.payload ?? {} })
+            if (e.kind !== 'section_observed') pushFeed({ kind: e.kind, robot_id: e.robot_id, section: e.section, severity: e.severity, payload: e.payload ?? {} })
             break
           }
           case 'mission': set((s) => {
@@ -133,7 +134,7 @@ export const useLive = create<LiveState>((set, get) => ({
             const missions = [...s.missions]
             if (idx >= 0) missions[idx] = { ...missions[idx], status: m.status, result: m.result ?? missions[idx].result }
             else missions.unshift({ id: m.id, status: m.status, robot_id: m.robot_id, kind: m.kind ?? '?', farm_id: null, priority: 5,
-              source: 'auto', target_h3: null, waypoints: null, payload: null, result: null, created_at: new Date().toISOString(),
+              source: 'auto', target_section: null, waypoints: null, payload: null, result: null, created_at: new Date().toISOString(),
               dispatched_at: null, completed_at: null, note: null })
             return { missions: missions.slice(0, 80) }
           }); break

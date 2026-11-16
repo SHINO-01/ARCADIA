@@ -78,7 +78,7 @@ export function AlertsView() {
 
 /* ------------------------------------------------------------------ Analytics */
 export function AnalyticsView() {
-  const [yields, setYields] = useState<{ by_crop: { crop: string; kg: number; cells: number }[]; total_kg: number } | null>(null)
+  const [yields, setYields] = useState<{ by_crop: { crop: string; kg: number; harvests: number }[]; total_kg: number } | null>(null)
   const [fleetStats, setFleetStats] = useState<{ robot_id: string; samples: number; avg_speed: number; min_battery: number; max_motor_temp: number }[]>([])
   const [history, setHistory] = useState<Record<string, number[]>>({})
   const farm = useUI((s) => s.farm)
@@ -108,7 +108,7 @@ export function AnalyticsView() {
       <EnergyPanel />
       <Panel title="Yields by crop" bodyClass="p-3 space-y-2">
         {!yields?.by_crop.length && <p className="text-xs text-fg-3">No harvests yet. Beds ripen on an accelerated clock once seeded.</p>}
-        {yields?.by_crop.map((y) => <div key={y.crop} className="text-xs"><div className="flex justify-between"><span className="flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-sm" style={{ background: CROP_COLORS[y.crop] }} />{y.crop}</span><span className="mono">{y.kg} kg · {y.cells} cells</span></div>
+        {yields?.by_crop.map((y) => <div key={y.crop} className="text-xs"><div className="flex justify-between"><span className="flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-sm" style={{ background: CROP_COLORS[y.crop] }} />{y.crop}</span><span className="mono">{y.kg} kg · {y.harvests} harvests</span></div>
           <div className="mt-1 h-1.5 rounded-full bg-line"><div className="h-full rounded-full" style={{ width: `${Math.min(100, (y.kg / Math.max(1, yields.total_kg)) * 100)}%`, background: CROP_COLORS[y.crop] }} /></div></div>)}
       </Panel>
       <Panel title="Fleet telemetry · last hour" bodyClass="p-3">

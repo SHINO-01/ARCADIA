@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import random
 import time
 from datetime import datetime, timedelta, timezone
@@ -105,7 +106,7 @@ def dispatch_mission(self, mission_id: str) -> dict:
         m.celery_task_id = self.request.id
         s.execute(update(Robot).where(Robot.id == m.robot_id).values(current_mission_id=m.id))
         s.commit()
-        payload = {"mission_id": m.id, "kind": m.kind, "waypoints": m.waypoints or [], "target_h3": m.target_h3,
+        payload = {"mission_id": m.id, "kind": m.kind, "waypoints": m.waypoints or [], "section": m.target_section,
                    **(m.payload or {})}
         robot_id, kind = m.robot_id, m.kind
     cmd = Command(kind="tow" if kind == "tow" else "mission", robot_id=robot_id, payload=payload)
@@ -141,7 +142,39 @@ def mission_watchdog() -> dict:
         st = sync_get_fleet().get(rid, {})
         if st.get("status") in ("active", "returning", "towing"):
             sync_update_robot(rid, status="idle", current_mission_id=None, mission_id=None)
-    return {"timed_out": len(freed)}
+    return {"timed_out": len(freed), "stalled": _detect_stalls()}
+
+
+STALL_AFTER_S = 90.0
+
+
+def _detect_stalls() -> list[str]:
+    """A unit that keeps reporting its mission but has not moved for STALL_AFTER_S is stuck (blocked
+    by something, wedged on a pad edge...). Raise one WARN in the operator feed per stall."""
+    r = get_sync_redis()
+    now = time.time()
+    stalled = []
+    for rid, st in sync_get_fleet().items():
+        mid = st.get("mission_id")
+        key = f"arcadia:stall:{rid}"
+        if not mid or st.get("status") not in ("active", "returning", "towing") or now - float(st.get("last_seen") or 0) > 30:
+            r.delete(key)
+            continue
+        x, y = float(st.get("x") or 0.0), float(st.get("y") or 0.0)
+        prev = json.loads(r.get(key) or "null")
+        if prev is None or prev["mid"] != mid or math.hypot(x - prev["x"], y - prev["y"]) > 0.5:
+            r.set(key, json.dumps({"mid": mid, "x": x, "y": y, "t": now, "warned": False}), ex=3600)
+            continue
+        if now - prev["t"] > STALL_AFTER_S and not prev["warned"]:
+            prev["warned"] = True
+            r.set(key, json.dumps(prev), ex=3600)
+            stalled.append(rid)
+            log.warning("%s has not moved for %.0f s on mission %s", rid, now - prev["t"], mid)
+            sync_publish_dashboard({"t": "event", "event": {
+                "kind": "mission_stalled", "robot_id": rid, "mission_id": mid, "severity": "WARN", "section": None,
+                "payload": {"seconds": round(now - prev["t"]), "x": round(x, 1), "y": round(y, 1),
+                            "title": f"{rid} has not moved for {round(now - prev['t'])} s"}}})
+    return stalled
 
 
 # ============================================================================ chaos
@@ -196,14 +229,22 @@ def recovery_protocol(incident_id: str) -> dict:
         sx, sy = float(st.get("x", stranded.x)), float(st.get("y", stranded.y))
         ax, ay = float(ast.get("x", agv.x)), float(ast.get("y", agv.y))
         from app.services.dispatcher import ground_route
-        wps = ground_route(s, inc.farm_id, ax, ay, {"x": sx, "y": sy})
+        farm = s.get(Farm, inc.farm_id)
+        to_unit, _ = ground_route(farm, ax, ay, sx, sy)          # along the tracks to the stranded unit
+        if not to_unit:
+            log.error("recovery %s: no track route from the AGV (%.1f, %.1f) to %s (%.1f, %.1f)",
+                      incident_id, ax, ay, stranded.id, sx, sy)
+            return {"error": "no track route to the stranded unit"}
+        pickup_index = max(0, len(to_unit) - 1)
+        wps = list(to_unit)
         if home is not None:
-            wps += ground_route(s, inc.farm_id, sx, sy, {"x": home.x, "y": home.y, "h3": home.h3_index, "lat": home.lat, "lng": home.lng})
+            to_bay, _ = ground_route(farm, sx, sy, home.x, home.y)  # then haul it to the repair bay
+            wps += to_bay
         agv_busy = s.execute(select(Mission.id).where(Mission.robot_id == agv.id,
                                                       Mission.status.in_(("dispatched", "running")))).first() is not None
         m = Mission(farm_id=inc.farm_id, robot_id=agv.id, kind="tow", source="recovery", priority=0, waypoints=wps,
                     payload={"target_robot": stranded.id, "incident_id": inc.id, "dropoff": home.slug if home else None,
-                             "pickup_index": len(ground_route(s, inc.farm_id, ax, ay, {"x": sx, "y": sy})) - 1},
+                             "pickup_index": pickup_index},
                     note=f"Tow {stranded.name} to {home.slug if home else 'dock'}" + (" (queued behind current tow)" if agv_busy else ""))
         s.add(m)
         s.flush()

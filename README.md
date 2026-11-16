@@ -10,7 +10,7 @@ powered-down and is only woken for tow recoveries).
 ```
 ARCADIA/
 ├── backend/        FastAPI orchestrator · Celery dispatch/chaos/recovery/energy · ROSbridge adapter · headless twin
-├── frontend/       React 19 + Vite + MapLibre (Mapbox Draw) + H3 + "Altara" 60 fps canvas swarm renderer
+├── frontend/       React 19 + Vite + MapLibre + "Altara" 60 fps canvas swarm renderer
 ├── robotics/       Native ROS 2 workspace: arcadia_msgs, arcadia_sim (Webots controllers), arcadia_supervisor (C++), arcadia_bringup
 ├── infra/caddy/    Reverse proxy (SPA, /api, /ws, /rosbridge, /webots-stream) with internal TLS on :8443
 ├── docker-compose.yml   caddy · api · worker · beat · web · postgres (TimescaleDB) · redis
@@ -52,29 +52,33 @@ The dashboard is grouped into five views (left rail, keys `1`–`5`):
 
 | View | What it is for |
 |---|---|
-| **Plan** | Draw a boundary (built-in tool: click vertices, click the first point / double-click / `Enter` to close, `⌫` undo, `Esc` cancel), tessellate to H3, plan infrastructure, activate. The refresh button starts a **fresh session** (deletes every farm, mission and incident). |
+| **Plan** | Draw a boundary (built-in tool: click vertices, click the first point / double-click / `Enter` to close, `⌫` undo, `Esc` cancel), plan the controlled-traffic layout and infrastructure, activate. The refresh button starts a **fresh session** (deletes every farm, mission and incident). |
 | **Operations** | Live map + fleet roster + RTS command bar. |
 | **3D Twin** | Embedded Webots W3D stream with camera presets (farm overview / follow a unit). |
 | **Alerts** | Incidents, Chaos Engine (scenario presets, random interval, manual injection) and the event stream. |
 | **Analytics** | Field KPIs, microgrids, yields, fleet telemetry, dispatch history. |
 
-**RTS unit control (Operations):** click a unit to select · ctrl/shift+click to add to the selection · right-click the map to move the selection · shift+right-click to add route waypoints, then **Patrol** (looping) or **Go** · `S` stop · `H` nearest dock · `Esc` clear. Operator orders put a unit under manual control; **Auto** hands it back to the dispatcher. A UAV on patrol keeps surveying the cells it overflies.
+**RTS unit control (Operations):** click a unit to select · ctrl/shift+click to add to the selection · right-click the map to move the selection · shift+right-click to add route waypoints, then **Patrol** (looping) or **Go** · `S` stop · `H` nearest dock · `Esc` clear. Operator orders put a unit under manual control; **Auto** hands it back to the dispatcher. Ground routes follow the tracks (the route builder previews the real on-track path before you send it); a UAV flies the clicks directly at 6 m and keeps surveying the sections it overflies.
 
-**Infrastructure planning:** K-Means++ charging docks (solar/wind), robot storage, a **repair station**, a grid of **travel roads** (row roads every *N* hex rows plus headland cross roads at every bed boundary) and **crop beds** (blocks between roads, sliver beds merged). Road spacing, bed width, orientation (E–W / N–S), dock count and crop rotation are adjustable; re-planning a live farm respawns it in Webots. Ground vehicles route over the roads (Dijkstra, crop cells cost 6× a road cell) and only cut across a bed when the detour would be disproportionate.
+**Controlled-traffic field layout:** the field is laid out the way mechanised farms protect their soil and crop. Long **beds** run along the field's long axis and are split into ~40 m **sections**, the unit of crop state, observation and work. Permanent dirt **tramlines**, just wide enough for the vehicles, run between the beds. A **headland** track circles the field inside the boundary for turning, and **cross alleys** break long beds. Charging docks (K-Means++ over the bed sections, solar/wind), robot storage and a **repair station** sit on **yard pads** outside the field, each joined to the headland by a short spur. Bed width, tramline width, headland width, section length, alley spacing, bed orientation, dock count and crop rotation are adjustable in metres; re-planning a live farm respawns it in Webots.
 
-**Stranding scenarios:** motor jam, battery collapse and **terrain entrapment** (waterlogged beds are drawn as hazards on the map and in Webots; ground vehicles crossing them can bog down, and the supervisor pins the chassis until it is winched). Tows drive the roads to the unit, winch it and deliver it to the **repair station**. Low-battery units head for the **nearest** charging dock, decided by route length and remaining range.
+**Traffic rules:** ground vehicles only ever drive on the track network (headland, tramlines, alleys, spurs), routed by Dijkstra over the noded tracks. A goal clicked inside a bed snaps to the nearest track. Seeding and weeding are done from the tramline beside the section, with the tool reaching into the bed at 0.5 m/s. **Harvest is the one exception:** the harvester leaves the tramline at the section's end, drives down the bed's centre line cutting the crop, and steps back onto the same tramline. Every controller carries the track graph (`world.track_graph`), so its own moves (low-battery return, return-home, and the approach to a mission planned from a stale position) also stay on the tracks. Controllers follow each track leg with a look-ahead path follower, so they hold the tramline centre line. Weeding only targets planted sections, because seeding cultivates the ground and clears weeds. Harvesting a section that is not ripe yields nothing.
+
+**Stranding scenarios:** motor jam, battery collapse and **terrain entrapment** (waterlogged beds are drawn as hazards on the map and in Webots; ground vehicles crossing them can bog down, and the supervisor pins the chassis until it is winched). Tows drive the tracks to the unit (shortest path from where the AGV actually is: parked units keep reporting their position), winch it and deliver it to the **repair station**. A unit that keeps a mission but stops moving for 90 s raises a `mission_stalled` warning in the event feed. Low-battery units head for the **nearest** charging dock, decided by route length and remaining range.
 
 ## Layer map (spec → implementation)
 
 | Spec | Where |
 |---|---|
-| Mapbox Draw geo-selection → GeoJSON | `frontend/src/components/FarmMap.tsx` (MapLibre + `@mapbox/mapbox-gl-draw`) |
-| Uber H3 hex mapping (auto resolution) | `backend/app/services/h3_engine.py` |
+| Geo-selection → GeoJSON | `frontend/src/components/FarmMap.tsx` (MapLibre, built-in boundary tool) |
+| Field geometry (local ENU plane) | `backend/app/services/field.py`, `geo.py` |
+| Controlled-traffic layout | `backend/app/services/layout.py` (beds, sections, tramlines, headland, alleys) |
+| Track network router | `backend/app/services/track_network.py` (noded tracks, near-miss healing, Dijkstra); on-board copy in `arcadia_sim/behaviour.py` (`TrackGraph`) |
 | K-Means dock/storage planning | `backend/app/services/planner.py` (numpy k-means++, travel-latency metrics) |
 | World-config JSON payload | `backend/app/services/world_builder.py` → `GET /api/farms/{id}/world` |
-| C++ Webots Supervisor spawner | `robotics/ros2_ws/src/arcadia_supervisor/` (terrain, hex crops, docks, storage, robots, ground truth, tow mechanics) |
+| C++ Webots Supervisor spawner | `robotics/ros2_ws/src/arcadia_supervisor/` (terrain, bed sections, tracks, docks, storage, robots, ground truth, tow mechanics) |
 | Robot models + controllers | `arcadia_sim/protos/*.proto`, `arcadia_sim/arcadia_sim/robot_controller.py` (pure-pursuit + LiDAR avoidance, torque-coupled battery) |
-| Mock CV (ripeness/weeds) | Supervisor proximity events `cell_observed` (UAV sensor radius) |
+| Mock CV (ripeness/weeds) | Supervisor proximity events `section_observed` (UAV sensor radius) |
 | ROSbridge translation | `arcadia_bringup` launches `rosbridge_websocket`; backend client `backend/app/bridge/rosbridge_client.py` |
 | Telemetry throttling | `arcadia_sim/arcadia_sim/telemetry_throttle.py` (50 Hz odom → 5 Hz `/arcadia/telemetry`) |
 | diagnostic_aggregator | `arcadia_sim/config/diagnostics.yaml` → `/diagnostics_agg` → fleet OK/WARN/ERROR |
@@ -84,12 +88,13 @@ The dashboard is grouped into five views (left rail, keys `1`–`5`):
 | Time-series persistence | TimescaleDB hypertables `telemetry`, `energy_log` (`backend/alembic/versions/0001_initial.py`) |
 | 60 fps canvas map ("Altara") | `frontend/src/altara/renderer.ts` |
 | Split-screen Webots stream | `frontend/src/components/WebotsView.tsx` + `public/webots-viewer.html` (W3D stream on :1234) |
-| Click-to-dispatch override | Fleet panel → arm → click hex → `POST /api/fleet/{id}/dispatch` (pauses auto for that robot) |
+| Click-to-dispatch override | Fleet panel → arm → click a bed section → `POST /api/fleet/{id}/dispatch` (pauses auto for that robot) |
 | Maintenance modal + AGV tow | `IncidentModal` → `POST /api/incidents/{id}/recover` → Celery `recovery_protocol` |
 | Caddy HTTPS/WebSocket routing | `infra/caddy/Caddyfile` |
 
 ## Verified end to end (2026-11-14, IdeaPad Slim 3)
-- Headless twin: farm → H3 grid → K-Means plan → activate → automated survey/seed/weed missions, TimescaleDB telemetry, chaos faults, AGV tow recovery. `make backend-test` passes.
+- 2026-11-16: the H3 hex index was retired (migration `0004`); bed sections are the only spatial unit. `backend/tests/test_twin.py` drives survey, seed, weed, harvest (ripe and early), goto, a looped ground patrol, return-home and a breakdown tow planned from a stale AGV position, and checks every telemetry frame against the beds.
+- Headless twin: farm → layout → K-Means plan → activate → automated survey/seed/weed missions, TimescaleDB telemetry, chaos faults, AGV tow recovery. `make backend-test` passes.
 - Native stack: Webots R2025a (tarball) + ROS 2 Lyrical — supervisor spawns the farm from the backend world config, three extern controllers attach, 50 Hz odometry throttled to 5 Hz `/arcadia/telemetry`, `diagnostic_aggregator` roll-ups, rosbridge ↔ FastAPI hot-swap (the backend switches from headless twin to ROS automatically), dashboard embeds the W3D stream.
 - Energy autonomy in the physics sim: torque-coupled drain (wheel torque × angular velocity), passive solar skins fed by the supervisor's irradiance broadcast, and a 22% reserve reflex — the Scout UAV abandoned a survey at 22%, flew to dock-1 and charged, without the backend's help.
 - Chaos → recovery in the physics sim: `motor_jam` injected into the Seeder UGV → `fault_detected` → interruptive modal → Logistics AGV powers up in storage, drives ~70 m (pure-pursuit + LiDAR), winches the UGV (supervisor drags it), parks it on the dock pad, fault cleared + recharge, incident resolved in 76 s, AGV powers back down.

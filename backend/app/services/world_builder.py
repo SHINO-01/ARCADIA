@@ -1,16 +1,18 @@
 """Builds the JSON world-configuration payload ingested by the Webots C++ Supervisor spawner.
 
-Schema version 1. Everything is expressed in local ENU metres relative to the farm origin so
+Schema version 4. Everything is expressed in local ENU metres relative to the farm origin so
 the simulator never has to know about geodesy. Lat/lng are included for convenience.
 """
 from __future__ import annotations
 
 import math
+import random
 import time
 
 from app.core.config import settings
-from app.services.h3_engine import CROP_HEIGHT_M, HexGrid
+from app.services.field import CROP_HEIGHT_M, Field
 from app.services.planner import PlanReport
+from app.services.track_network import TrackNetwork
 
 ROBOT_CATALOG = {
     "scout_uav": {"name": "Scout UAV", "role": "aerial_survey", "max_speed": 6.0, "battery_wh": 900,
@@ -45,46 +47,39 @@ def default_roster() -> list[dict]:
     return roster
 
 
-def build_world_config(farm_id: str, farm_name: str, grid: HexGrid, plan: PlanReport, seed: int = 42) -> dict:
-    xs = [c.x for c in grid.cells]
-    ys = [c.y for c in grid.cells]
-    margin = grid.edge_m * 3
+def build_world_config(farm_id: str, farm_name: str, fld: Field, plan: PlanReport, seed: int = 42) -> dict:
+    """World config schema 4: a controlled-traffic field (bed sections + tracks) for the simulators,
+    plus the noded track graph so robot controllers can route themselves along the tracks."""
+    L = plan.layout
+    rng = random.Random(seed)
+    xs = [pt[0] for t in L.tracks for pt in t.coords] + [s.x for s in plan.sites]
+    ys = [pt[1] for t in L.tracks for pt in t.coords] + [s.y for s in plan.sites]
+    margin = 25.0
     minx, maxx, miny, maxy = min(xs) - margin, max(xs) + margin, min(ys) - margin, max(ys) + margin
 
-    infra_by_h3 = {d.h3: d for d in plan.sites}
-    road = set(plan.roads)
-    bed_of = {h: b.id for b in plan.beds for h in b.cells}
-    cells = []
-    for c in grid.cells:
-        site = infra_by_h3.get(c.h3)
-        if site:
-            kind = "dock" if site.kind.endswith("dock") else "repair" if site.kind == "repair_station" else "storage"
-        elif c.h3 in road:
-            kind = "road"
-        else:
-            kind = "crop"
-        cells.append({
-            "h3": c.h3, "x": c.x, "y": c.y, "lat": round(c.lat, 7), "lng": round(c.lng, 7), "kind": kind,
-            "bed": bed_of.get(c.h3), "crop": c.crop_type if kind == "crop" else None,
-            "crop_height": CROP_HEIGHT_M[c.crop_type] if kind == "crop" else 0.0,
-            "state": c.state if kind == "crop" else "infra", "moisture": c.soil_moisture,
-            # waterlogged cells (high moisture) can trap ground vehicles: terrain hazard for the sim
-            "waterlogged": kind == "crop" and c.soil_moisture > 0.78,
+    sections = []
+    for sec in L.sections:
+        lat, lng = fld.origin.to_latlng(sec.x, sec.y)
+        sections.append({
+            "id": sec.id, "bed": sec.bed_id, "crop": sec.crop, "x": sec.x, "y": sec.y, "lat": round(lat, 7),
+            "lng": round(lng, 7), "length": round(sec.length, 3), "width": sec.width, "angle": round(sec.angle, 6),
+            "crop_height": CROP_HEIGHT_M[sec.crop], "state": "fallow",
+            "moisture": round(min(1.0, max(0.1, rng.gauss(0.52, 0.12))), 3), "passes": sec.passes,
         })
-
+    tracks = [{"id": t.id, "kind": t.kind, "width": t.width, "coords": t.coords} for t in L.tracks]
     infrastructure = [{
-        "id": s.slug, "kind": s.kind, "h3": s.h3, "x": s.x, "y": s.y, "lat": round(s.lat, 7), "lng": round(s.lng, 7),
-        "capacity_kw": s.capacity_kw, "storage_kwh": s.storage_kwh, "cluster_size": s.cluster_size,
+        "id": s.slug, "kind": s.kind, "x": s.x, "y": s.y, "lat": round(s.lat, 7), "lng": round(s.lng, 7),
+        "capacity_kw": s.capacity_kw, "storage_kwh": s.storage_kwh, "cluster_size": s.cluster_size, "access": s.access,
     } for s in plan.sites]
-    beds = [{"id": b.id, "crop": b.crop, "cells": len(b.cells), "x": b.centroid_x, "y": b.centroid_y} for b in plan.beds]
 
     dock = plan.docks[0]
     store = plan.storage[0]
     robots = []
     for i, r in enumerate(default_roster()):
         cat = ROBOT_CATALOG[r["type"]]
-        ang = i * (2 * math.pi / 5)
         base = store if r["type"] == "logistics_agv" else dock
+        # park on the yard pad, spaced so units never overlap
+        ang = i * (2 * math.pi / 5)
         robots.append({
             "id": r["id"], "type": r["type"], "name": f"{cat['name']} {r['id'].split('-')[1]}",
             "active": r["active"], "home": base.slug, "repair": plan.repair[0].slug if plan.repair else None,
@@ -93,14 +88,17 @@ def build_world_config(farm_id: str, farm_name: str, grid: HexGrid, plan: PlanRe
         })
 
     return {
-        "schema": 2, "farm": {"id": farm_id, "name": farm_name, "seed": seed, "revision": round(time.time(), 3),
-                              "origin": {"lat": grid.origin.lat, "lng": grid.origin.lng},
-                              "area_m2": round(grid.area_m2, 1)},
-        "terrain": {"min_x": round(minx, 2), "max_x": round(maxx, 2), "min_y": round(miny, 2),
-                    "max_y": round(maxy, 2), "width": round(maxx - minx, 2), "height": round(maxy - miny, 2)},
-        "hex": {"resolution": grid.resolution, "edge_m": round(grid.edge_m, 3), "count": len(cells), "cells": cells},
-        "infrastructure": infrastructure, "beds": beds,
-        "roads": {"spacing": plan.road_spacing, "orientation": plan.orientation, "cells": plan.road_cells},
-        "robots": robots,
+        "schema": 4,
+        "farm": {"id": farm_id, "name": farm_name, "seed": seed, "revision": round(time.time(), 3),
+                 "origin": {"lat": fld.origin.lat, "lng": fld.origin.lng}, "area_m2": round(fld.area_m2, 1)},
+        "terrain": {"min_x": round(minx, 2), "max_x": round(maxx, 2), "min_y": round(miny, 2), "max_y": round(maxy, 2),
+                    "width": round(maxx - minx, 2), "height": round(maxy - miny, 2),
+                    "boundary": [[round(x, 3), round(y, 3)] for x, y in
+                                 (fld.origin.to_xy(lat, lng) for lng, lat in fld.boundary_lnglat)]},
+        "layout": {"angle": round(L.angle, 6), "bed_width": L.params.bed_width, "lane_width": L.params.lane_width,
+                   "headland_width": L.params.headland_width, "beds": L.beds},
+        "sections": sections, "tracks": tracks, "hazards": L.hazards,
+        "track_graph": TrackNetwork(tracks).graph(),
+        "infrastructure": infrastructure, "robots": robots,
         "limits": {"max_active_robots": settings.max_active_robots},
     }

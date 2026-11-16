@@ -1,7 +1,7 @@
 /**
- * Mission map: geo-selection (built-in boundary tool), H3 planning layers (crop beds, travel
- * roads, docks, storage, repair station, waterlogged hazards), live swarm via the Altara canvas,
- * and RTS-style unit control:
+ * Mission map: geo-selection (built-in boundary tool), the controlled-traffic field layout (bed
+ * sections, tramlines, headland, alleys, yard spurs and pads, waterlogged hazards, weeds), an
+ * the live swarm via the Altara canvas, and RTS-style unit control:
  *   click unit = select · ctrl/shift+click = add to selection · right-click = move selection
  *   shift+right-click = append a route waypoint · Esc = clear
  */
@@ -13,9 +13,9 @@ import 'maplibre-gl/dist/maplibre-gl.css'
 import * as turf from '@turf/turf'
 import { AltaraRenderer } from '../altara/renderer'
 import { api } from '../lib/api'
-import { useLive, cellOverrides } from '../store/live'
+import { useLive, sectionOverrides } from '../store/live'
 import { useUI } from '../store/ui'
-import { CROP_COLORS, INFRA_COLOR, type Infrastructure } from '../lib/types'
+import { CROP_COLORS, INFRA_COLOR, TRACK_COLOR, type Infrastructure } from '../lib/types'
 
 // The bundler does not emit MapLibre's worker on its own; hand it an explicit asset URL.
 maplibregl.setWorkerUrl(maplibreWorkerUrl)
@@ -29,8 +29,7 @@ const SATELLITE_STYLE: StyleSpecification = {
     attribution: 'Imagery © Esri, Maxar, Earthstar Geographics' } },
   layers: [{ id: 'esri', type: 'raster', source: 'esri' }],
 }
-const STATE_COLORS: Record<string, string> = { fallow: '#6b5a3e', seeded: '#8a7a45', growing: '#3fb95a', ripe: '#f5c451', harvested: '#4b5f52', infra: '#2d4436' }
-const KIND_COLORS: Record<string, string> = { road: INFRA_COLOR.road, dock: '#2d4436', storage: '#3a2f52', repair: '#5a3a24' }
+const STATE_COLORS: Record<string, string> = { fallow: '#6b5a3e', seeded: '#8a7a45', growing: '#3fb95a', ripe: '#f5c451', harvested: '#4b5f52' }
 
 export interface FarmMapHandle { startDraw: () => void; clearDraw: () => void; fitFarm: () => void }
 export interface FarmMapProps { visible: boolean; onDrawn: (feature: GeoJSON.Feature<GeoJSON.Polygon>, areaM2: number) => void; onFps?: (fps: number) => void }
@@ -44,7 +43,7 @@ export const FarmMap = forwardRef<FarmMapHandle, FarmMapProps>(function FarmMap(
   const popupRef = useRef<maplibregl.Popup | null>(null)
   const [ready, setReady] = useState(false)
   const [imagery, setImagery] = useState(false)  // first full render (satellite tiles can be slow)
-  const { farm, mode, layer, dispatchArm, selected, selectedRobot, route, hoverHex, armDispatch, setHoverHex, notify } = useUI()
+  const { farm, mode, layer, dispatchArm, selected, selectedRobot, route, hoverInfo, armDispatch, setHoverInfo, notify } = useUI()
   const cellVersion = useLive((s) => s.cellVersion)
   const chaosFlash = useLive((s) => s.chaosFlash)
   const fleet = useLive((s) => s.fleet)
@@ -90,18 +89,26 @@ export const FarmMap = forwardRef<FarmMapHandle, FarmMapProps>(function FarmMap(
     const imageryPoll = setInterval(() => { if (map.isStyleLoaded() && map.areTilesLoaded()) { setImagery(true); clearInterval(imageryPoll) } }, 400)
     setTimeout(() => { setImagery(true); clearInterval(imageryPoll) }, 20000)  // never block the UI on a slow tile server
     map.on('load', () => {
-      map.addSource('hex', { type: 'geojson', data: { type: 'FeatureCollection', features: [] }, promoteId: 'h3' })
-      map.addLayer({ id: 'hex-fill', type: 'fill', source: 'hex', paint: { 'fill-color': ['coalesce', ['feature-state', 'color'], '#6b5a3e'], 'fill-opacity': ['case', ['boolean', ['feature-state', 'hover'], false], 0.9, ['==', ['get', 'kind'], 'road'], 0.85, 0.55] } })
-      map.addLayer({ id: 'hex-line', type: 'line', source: 'hex', paint: { 'line-color': '#0b1410', 'line-width': 0.5, 'line-opacity': 0.5 } })
-      map.addLayer({ id: 'hex-water', type: 'fill', source: 'hex', filter: ['==', ['get', 'waterlogged'], true], paint: { 'fill-pattern': 'water', 'fill-opacity': 0.9 } })
-      map.addLayer({ id: 'hex-weeds', type: 'fill', source: 'hex', filter: ['==', ['get', 'weeds'], true], paint: { 'fill-pattern': 'weeds', 'fill-opacity': 0.9 } })
-      map.addLayer({ id: 'hex-target', type: 'line', source: 'hex', filter: ['==', ['get', 'h3'], ''], paint: { 'line-color': '#ffffff', 'line-width': 2.5 } })
+      // physical layout: tracks under beds, beds, hazards and yard pads on top
+      map.addSource('layout', { type: 'geojson', data: { type: 'FeatureCollection', features: [] }, promoteId: 'id' })
+      map.addLayer({ id: 'track-fill', type: 'fill', source: 'layout', filter: ['==', ['get', 'layer'], 'track'],
+        paint: { 'fill-color': ['match', ['get', 'kind'], 'lane', TRACK_COLOR.lane, 'spur', TRACK_COLOR.spur, TRACK_COLOR.headland], 'fill-opacity': 0.92 } })
+      map.addLayer({ id: 'section-fill', type: 'fill', source: 'layout', filter: ['==', ['get', 'layer'], 'section'],
+        paint: { 'fill-color': ['coalesce', ['feature-state', 'color'], '#6b5a3e'], 'fill-opacity': ['case', ['boolean', ['feature-state', 'hover'], false], 0.95, 0.8] } })
+      map.addLayer({ id: 'section-line', type: 'line', source: 'layout', filter: ['==', ['get', 'layer'], 'section'],
+        paint: { 'line-color': '#0b1410', 'line-width': ['interpolate', ['linear'], ['zoom'], 15, 0.2, 18, 1], 'line-opacity': 0.55 } })
+      map.addLayer({ id: 'section-target', type: 'line', source: 'layout', filter: ['==', ['get', 'id'], ''], paint: { 'line-color': '#ffffff', 'line-width': 2.5 } })
+      map.addLayer({ id: 'hazard-fill', type: 'fill', source: 'layout', filter: ['==', ['get', 'layer'], 'hazard'], paint: { 'fill-pattern': 'water', 'fill-opacity': 0.95 } })
+      map.addLayer({ id: 'hazard-line', type: 'line', source: 'layout', filter: ['==', ['get', 'layer'], 'hazard'], paint: { 'line-color': '#5cc8ff', 'line-width': 1.5 } })
+      map.addLayer({ id: 'pad-fill', type: 'fill', source: 'layout', filter: ['==', ['get', 'layer'], 'pad'],
+        paint: { 'fill-color': ['match', ['get', 'kind'], 'solar_dock', INFRA_COLOR.solar_dock, 'wind_dock', INFRA_COLOR.wind_dock, 'storage', INFRA_COLOR.storage, INFRA_COLOR.repair_station], 'fill-opacity': 0.55 } })
+      map.addSource('weeds', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } })
+      map.addLayer({ id: 'weeds', type: 'circle', source: 'weeds', paint: { 'circle-radius': ['interpolate', ['linear'], ['zoom'], 15, 2.5, 18, 6], 'circle-color': '#ff4d5e', 'circle-stroke-color': '#0b1410', 'circle-stroke-width': 1 } })
       map.addSource('beds', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } })
-      map.addLayer({ id: 'bed-outline', type: 'line', source: 'beds', paint: { 'line-color': '#e6f0e9', 'line-width': 1.6, 'line-opacity': 0.75 } })
-      map.addLayer({ id: 'bed-label', type: 'symbol', source: 'beds', layout: { 'text-field': ['get', 'label'], 'text-size': 11, 'text-font': ['Open Sans Semibold', 'Noto Sans Regular'], 'text-allow-overlap': false }, paint: { 'text-color': '#ffffff', 'text-halo-color': '#0b1410', 'text-halo-width': 1.4 } })
+      map.addLayer({ id: 'bed-label', type: 'symbol', source: 'beds', minzoom: 15.5, layout: { 'text-field': ['get', 'label'], 'text-size': 10, 'text-rotate': ['get', 'rot'], 'text-rotation-alignment': 'map', 'text-font': ['Open Sans Semibold'], 'text-allow-overlap': false }, paint: { 'text-color': '#ffffff', 'text-halo-color': '#0b1410', 'text-halo-width': 1.2 } })
       map.addSource('infra', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } })
       map.addLayer({ id: 'infra-halo', type: 'circle', source: 'infra', paint: { 'circle-radius': 17, 'circle-color': ['get', 'color'], 'circle-opacity': 0.28, 'circle-stroke-color': ['get', 'color'], 'circle-stroke-width': 2.2 } })
-      map.addLayer({ id: 'infra-label', type: 'symbol', source: 'infra', layout: { 'text-field': ['get', 'label'], 'text-size': 11, 'text-offset': [0, 2.2], 'text-font': ['Open Sans Semibold', 'Noto Sans Regular'] }, paint: { 'text-color': '#e6f0e9', 'text-halo-color': '#0b1410', 'text-halo-width': 1.4 } })
+      map.addLayer({ id: 'infra-label', type: 'symbol', source: 'infra', layout: { 'text-field': ['get', 'label'], 'text-size': 11, 'text-offset': [0, 2.2], 'text-font': ['Open Sans Semibold'] }, paint: { 'text-color': '#e6f0e9', 'text-halo-color': '#0b1410', 'text-halo-width': 1.4 } })
       map.addSource('paths', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } })
       map.addLayer({ id: 'paths', type: 'line', source: 'paths', paint: { 'line-color': ['get', 'color'], 'line-width': 1.6, 'line-dasharray': [2, 2], 'line-opacity': 0.85 } })
       map.addSource('boundary', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } })
@@ -111,7 +118,7 @@ export const FarmMap = forwardRef<FarmMapHandle, FarmMapProps>(function FarmMap(
       map.addSource('route', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } })
       map.addLayer({ id: 'route-line', type: 'line', source: 'route', filter: ['==', ['geometry-type'], 'LineString'], paint: { 'line-color': '#7ce38b', 'line-width': 2.2, 'line-dasharray': [1, 1.5] } })
       map.addLayer({ id: 'route-pt', type: 'circle', source: 'route', filter: ['==', ['geometry-type'], 'Point'], paint: { 'circle-radius': 9, 'circle-color': '#0b1410', 'circle-stroke-color': '#7ce38b', 'circle-stroke-width': 2 } })
-      map.addLayer({ id: 'route-no', type: 'symbol', source: 'route', filter: ['==', ['geometry-type'], 'Point'], layout: { 'text-field': ['get', 'n'], 'text-size': 10, 'text-font': ['Open Sans Semibold', 'Noto Sans Regular'] }, paint: { 'text-color': '#7ce38b' } })
+      map.addLayer({ id: 'route-no', type: 'symbol', source: 'route', filter: ['==', ['geometry-type'], 'Point'], layout: { 'text-field': ['get', 'n'], 'text-size': 10, 'text-font': ['Open Sans Semibold'] }, paint: { 'text-color': '#7ce38b' } })
       // patterns: weeds (red hatch) and waterlogged (blue hatch)
       const mk = (color: string, slope: 1 | -1) => { const c = document.createElement('canvas'); c.width = c.height = 8; const g = c.getContext('2d')!; g.strokeStyle = color; g.lineWidth = 1.6; g.beginPath(); if (slope === 1) { g.moveTo(0, 8); g.lineTo(8, 0) } else { g.moveTo(0, 0); g.lineTo(8, 8) } g.stroke(); return g.getImageData(0, 0, 8, 8) }
       map.addImage('weeds', mk('rgba(255,77,94,.95)', 1), { pixelRatio: 1 })
@@ -122,16 +129,16 @@ export const FarmMap = forwardRef<FarmMapHandle, FarmMapProps>(function FarmMap(
     })
 
     let hovered: string | null = null
-    map.on('mousemove', 'hex-fill', (e: MapMouseEvent & { features?: MapGeoJSONFeature[] }) => {
-      const id = e.features?.[0]?.properties?.h3 as string | undefined
-      if (hovered && hovered !== id) map.setFeatureState({ source: 'hex', id: hovered }, { hover: false })
-      if (id) map.setFeatureState({ source: 'hex', id }, { hover: true })
+    map.on('mousemove', 'section-fill', (e: MapMouseEvent & { features?: MapGeoJSONFeature[] }) => {
+      const id = e.features?.[0]?.properties?.id as string | undefined
+      if (hovered && hovered !== id) map.setFeatureState({ source: 'layout', id: hovered }, { hover: false })
+      if (id) map.setFeatureState({ source: 'layout', id }, { hover: true })
       hovered = id ?? null
-      setHoverHex(hovered)
+      setHoverInfo(hovered ? `section ${hovered}` : null)
     })
-    map.on('mouseleave', 'hex-fill', () => { if (hovered) map.setFeatureState({ source: 'hex', id: hovered }, { hover: false }); hovered = null; setHoverHex(null) })
+    map.on('mouseleave', 'section-fill', () => { if (hovered) map.setFeatureState({ source: 'layout', id: hovered }, { hover: false }); hovered = null; setHoverInfo(null) })
 
-    // ---- left click: select units / dispatch when armed / inspect hex
+    // ---- left click: select units / dispatch when armed / inspect the layout
     map.doubleClickZoom.disable()
     map.on('dblclick', (e: MapMouseEvent) => { if (boundary.current.active) { e.preventDefault(); finishBoundary() } })
     map.on('click', async (e: MapMouseEvent) => {
@@ -149,25 +156,32 @@ export const FarmMap = forwardRef<FarmMapHandle, FarmMapProps>(function FarmMap(
       const hit = altaraRef.current?.hit(e.point.x, e.point.y)
       const multi = e.originalEvent.ctrlKey || e.originalEvent.metaKey || e.originalEvent.shiftKey
       if (hit && !ui.dispatchArm) { if (multi) ui.toggleSelect(hit); else ui.selectRobot(hit === ui.selectedRobot && ui.selected.length === 1 ? null : hit); return }
-      const feats = map.queryRenderedFeatures(e.point, { layers: ['hex-fill'] })
-      const h3 = feats[0]?.properties?.h3 as string | undefined
+      const feats = map.queryRenderedFeatures(e.point, { layers: ['section-fill', 'track-fill', 'hazard-fill', 'pad-fill'] })
+      const sec = feats.find((f) => f.properties?.layer === 'section')
+      const secId = sec?.properties?.id as string | undefined
       if (ui.dispatchArm) {
         const { robotId, kind } = ui.dispatchArm
-        try { const m = await api.dispatch(robotId, h3 ? { kind, target_h3: h3 } : { kind, lat: e.lngLat.lat, lng: e.lngLat.lng }); notify(`${robotId} → ${m.kind}${h3 ? ` @ ${h3.slice(-5)}` : ''}`, 'ok') }
-        catch (err) { notify((err as Error).message, 'err') }
+        try {
+          const m = await api.dispatch(robotId, secId && kind !== 'goto' ? { kind, target_section: secId } : { kind, lat: e.lngLat.lat, lng: e.lngLat.lng })
+          notify(`${robotId} → ${m.kind}${secId ? ` · section ${secId}` : ''}${m.waypoints ? ` · ${m.waypoints.length} on-track waypoints` : ''}`, 'ok')
+        } catch (err) { notify((err as Error).message, 'err') }
         armDispatch(null); return
       }
-      if (!multi && ui.selected.length && !h3) ui.select([])
-      if (h3 && feats[0]) {
-        const p = { ...feats[0].properties, ...(cellOverrides.get(h3) ?? {}) } as Record<string, unknown>
-        popupRef.current?.remove()
-        popupRef.current = new maplibregl.Popup({ closeButton: false, maxWidth: '260px' }).setLngLat(e.lngLat).setHTML(
-          `<div class="mono" style="font-size:11px;line-height:1.5">
-            <div style="color:#7ce38b;font-weight:600">${h3}${p.bed_id ? ` · ${p.bed_id}` : ''}</div>
-            <div>${p.kind === 'crop' ? `${p.crop_type} · <b>${p.state}</b>` : `<b>${{ road: 'travel road', dock: 'charging dock', storage: 'robot storage', repair: 'repair station' }[String(p.kind)] ?? p.kind}</b>`}</div>
-            ${p.kind === 'crop' ? `<div>moisture ${(Number(p.soil_moisture) * 100).toFixed(0)}% · health ${(Number(p.health) * 100).toFixed(0)}%${p.weeds ? ' · <span style="color:#ff4d5e">weeds</span>' : ''}${p.waterlogged ? ' · <span style="color:#5cc8ff">waterlogged</span>' : ''}</div>` : ''}
-            <div style="color:#6b8273">ENU ${Number(p.x).toFixed(1)}, ${Number(p.y).toFixed(1)} m</div></div>`).addTo(map)
-      }
+      if (!multi && ui.selected.length && !feats.length) ui.select([])
+      const f0 = feats[0]
+      if (!f0) return
+      popupRef.current?.remove()
+      const p = { ...f0.properties, ...(f0.properties?.layer === 'section' ? sectionOverrides.get(String(f0.properties?.id)) ?? {} : {}) } as Record<string, unknown>
+      const html = p.layer === 'section'
+        ? `<div style="color:#7ce38b;font-weight:600">Section ${p.id} · ${String(p.bed).replace('bed-', 'Bed ')}</div>
+           <div>${p.crop} · <b>${p.state}</b>${p.surveyed ? '' : ' <span style="color:#6b8273">(not surveyed yet)</span>'}</div>
+           <div>moisture ${(Number(p.moisture) * 100).toFixed(0)}% · health ${(Number(p.health) * 100).toFixed(0)}%${p.weeds ? ' · <span style="color:#ff4d5e">weeds</span>' : ''}</div>
+           <div style="color:#6b8273">machines work it from the tramlines either side</div>`
+        : p.layer === 'track' ? `<div style="font-weight:600">${{ lane: 'Tramline', headland: 'Headland', alley: 'Farm track (alley)', spur: 'Yard spur' }[String(p.kind)] ?? p.kind}</div><div style="color:#6b8273">${p.id}</div>`
+        : p.layer === 'hazard' ? '<div style="color:#5cc8ff;font-weight:600">Waterlogged low spot</div><div>ground vehicles can bog down here</div>'
+        : `<div style="font-weight:600">${p.id}</div><div style="color:#6b8273">${String(p.kind).replace('_', ' ')} · farm yard</div>`
+      popupRef.current = new maplibregl.Popup({ closeButton: false, maxWidth: '280px' }).setLngLat(e.lngLat)
+        .setHTML(`<div class="mono" style="font-size:11px;line-height:1.5">${html}</div>`).addTo(map)
     })
 
     // ---- right click: RTS move / route waypoint
@@ -176,10 +190,8 @@ export const FarmMap = forwardRef<FarmMapHandle, FarmMapProps>(function FarmMap(
       const ui = useUI.getState()
       if (!ui.selected.length) return
       if (e.originalEvent.shiftKey) { ui.addRoutePoint({ lat: e.lngLat.lat, lng: e.lngLat.lng }); return }
-      const feats = map.queryRenderedFeatures(e.point, { layers: ['hex-fill'] })
-      const h3 = feats[0]?.properties?.h3 as string | undefined
-      for (const rid of ui.selected) {
-        try { await api.dispatch(rid, h3 ? { kind: 'goto', target_h3: h3 } : { kind: 'goto', lat: e.lngLat.lat, lng: e.lngLat.lng }) }
+      for (const rid of ui.selected) {  // ground units: the backend snaps the goal onto the nearest track
+        try { await api.dispatch(rid, { kind: 'goto', lat: e.lngLat.lat, lng: e.lngLat.lng }) }
         catch (err) { notify(`${rid}: ${(err as Error).message}`, 'err') }
       }
       notify(`Move order → ${ui.selected.join(', ')}`, 'ok')
@@ -211,29 +223,31 @@ export const FarmMap = forwardRef<FarmMapHandle, FarmMapProps>(function FarmMap(
 
   // ---------------------------------------------------------------- farm data
   useEffect(() => {
-    const map = mapRef.current
+    const map = mapRef.current as (MLMap & { __layout?: GeoJSON.FeatureCollection }) | null
     if (!map || !ready) return
     const clear = (id: string) => (map.getSource(id) as GeoJSONSource | undefined)?.setData({ type: 'FeatureCollection', features: [] })
-    if (!farm) { clear('hex'); clear('infra'); clear('beds'); return }
+    if (!farm) { for (const id of ['layout', 'infra', 'beds', 'weeds']) clear(id); map.__layout = undefined; return }
     let cancelled = false
     ;(async () => {
-      const [grid, infra] = await Promise.all([api.hexgrid(farm.id), farm.plan ? api.infrastructure(farm.id) : Promise.resolve([] as Infrastructure[])])
+      const [layoutFC, infra] = await Promise.all([
+        farm.plan ? api.layout(farm.id) : Promise.resolve({ type: 'FeatureCollection', features: [] } as GeoJSON.FeatureCollection),
+        farm.plan ? api.infrastructure(farm.id) : Promise.resolve([] as Infrastructure[])])
       if (cancelled) return
-      cellOverrides.clear()
-      ;(map.getSource('hex') as GeoJSONSource).setData(grid)
+      sectionOverrides.clear()
+      ;(map.getSource('layout') as GeoJSONSource).setData(layoutFC)
       ;(map.getSource('infra') as GeoJSONSource).setData({ type: 'FeatureCollection', features: infra.map((i) => ({ type: 'Feature', geometry: { type: 'Point', coordinates: [i.lng, i.lat] },
         properties: { kind: i.kind, slug: i.slug, color: INFRA_COLOR[i.kind] ?? '#fff', label: `${{ solar_dock: '☀', wind_dock: '≋', storage: '⌂', repair_station: '⚒' }[i.kind] ?? '•'} ${i.slug}` } })) })
-      ;(map.getSource('beds') as GeoJSONSource).setData(bedFeatures(grid, farm.plan?.beds ?? []))
-      paintCells(map, grid, layer)
+      ;(map.getSource('beds') as GeoJSONSource).setData(bedLabels(layoutFC))
+      map.__layout = layoutFC
+      paintSections(map, layoutFC, layer)
       resetBoundary()
       const bbox = turf.bbox(farm.boundary as GeoJSON.Feature)
       map.fitBounds([[bbox[0], bbox[1]], [bbox[2], bbox[3]]], { padding: 60, duration: 900, maxZoom: 17.5 })
-      ;(map as unknown as { __grid: GeoJSON.FeatureCollection }).__grid = grid
     })()
     return () => { cancelled = true }
   }, [farm?.id, farm?.plan, ready]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  useEffect(() => { const map = mapRef.current as (MLMap & { __grid?: GeoJSON.FeatureCollection }) | null; if (map?.__grid && ready) paintCells(map, map.__grid, layer) }, [layer, cellVersion, ready])
+  useEffect(() => { const map = mapRef.current as (MLMap & { __layout?: GeoJSON.FeatureCollection }) | null; if (map?.__layout && ready) paintSections(map, map.__layout, layer) }, [layer, cellVersion, ready])
 
   // mission path + target for the primary selection
   useEffect(() => {
@@ -252,17 +266,29 @@ export const FarmMap = forwardRef<FarmMapHandle, FarmMapProps>(function FarmMap(
     ;(map.getSource('paths') as GeoJSONSource | undefined)?.setData({ type: 'FeatureCollection', features: feats })
     const prim = selectedRobot ? fleet[selectedRobot] : null
     const pm = missions.find((x) => x.id === (prim?.current_mission_id ?? prim?.mission_id))
-    map.setFilter('hex-target', ['==', ['get', 'h3'], pm?.target_h3 ?? ''])
+    map.setFilter('section-target', ['==', ['get', 'id'], String((pm?.payload as { section?: string } | null)?.section ?? '')])
   }, [selected, selectedRobot, fleet, ready])
 
-  // route builder overlay
+  // route builder overlay: the numbered clicks, plus the path the unit would really take
+  // (ground units: along the tracks, from the backend's router; the UAV: straight lines)
+  const routeLoop = useUI((st) => st.routeLoop)
   useEffect(() => {
     const map = mapRef.current
     if (!map || !ready) return
-    const feats: GeoJSON.Feature[] = route.map((p, i) => ({ type: 'Feature', geometry: { type: 'Point', coordinates: [p.lng, p.lat] }, properties: { n: String(i + 1) } }))
-    if (route.length > 1) feats.push({ type: 'Feature', geometry: { type: 'LineString', coordinates: [...route.map((p) => [p.lng, p.lat]), ...(useUI.getState().routeLoop ? [[route[0].lng, route[0].lat]] : [])] }, properties: {} })
-    ;(map.getSource('route') as GeoJSONSource | undefined)?.setData({ type: 'FeatureCollection', features: feats })
-  }, [route, ready])
+    const pts: GeoJSON.Feature[] = route.map((p, i) => ({ type: 'Feature', geometry: { type: 'Point', coordinates: [p.lng, p.lat] }, properties: { n: String(i + 1) } }))
+    const straight: GeoJSON.Feature[] = route.length > 1 ? [{ type: 'Feature', geometry: { type: 'LineString', coordinates: [...route.map((p) => [p.lng, p.lat]), ...(routeLoop ? [[route[0].lng, route[0].lat]] : [])] }, properties: {} }] : []
+    const put = (lines: GeoJSON.Feature[]) => (map.getSource('route') as GeoJSONSource | undefined)?.setData({ type: 'FeatureCollection', features: [...lines, ...pts] })
+    put(straight)
+    const robot = selectedRobot
+    if (!robot || !route.length) return
+    let cancelled = false
+    const t = window.setTimeout(() => {
+      api.routePreview(robot, { waypoints: route.map((p) => ({ lat: p.lat, lng: p.lng })), loop: routeLoop })
+        .then((f) => { if (!cancelled) put([f]) })
+        .catch(() => {})
+    }, 120)
+    return () => { cancelled = true; window.clearTimeout(t) }
+  }, [route, routeLoop, selectedRobot, ready])
 
   useEffect(() => { if (!chaosFlash) return; const r = fleet[chaosFlash.robot_id]; if (r?.lat != null && r.lng != null) altaraRef.current?.flash(r.lat, r.lng) }, [chaosFlash]) // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { if (mapRef.current) mapRef.current.getCanvas().style.cursor = dispatchArm ? 'crosshair' : selected.length ? 'default' : '' }, [dispatchArm, selected])
@@ -276,45 +302,44 @@ export const FarmMap = forwardRef<FarmMapHandle, FarmMapProps>(function FarmMap(
       {dispatchArm && <div className="pointer-events-none absolute left-1/2 top-3 -translate-x-1/2 rounded-md border border-leaf-2 bg-bg/90 px-3 py-1.5 text-xs text-leaf anim-slide-up">Click a target for <b>{dispatchArm.robotId}</b> · {dispatchArm.kind} <span className="kbd ml-2">Esc</span></div>}
       {drawState.active && <div className="pointer-events-none absolute left-1/2 top-3 -translate-x-1/2 rounded-md border border-leaf-2 bg-bg/90 px-3 py-1.5 text-xs text-fg anim-slide-up">
         <b className="text-leaf">Drawing boundary</b> · {drawState.n} vertices{drawState.areaM2 > 0 ? ` · ${(drawState.areaM2 / 10000).toFixed(2)} ha` : ''} · click the first point / double-click / <span className="kbd">Enter</span> to close · <span className="kbd">⌫</span> undo · <span className="kbd">Esc</span> cancel</div>}
-      {hoverHex && !dispatchArm && <div className="pointer-events-none absolute bottom-8 left-3 mono rounded bg-bg/80 px-2 py-1 text-[10px] text-fg-2">{hoverHex}</div>}
+      {hoverInfo && !dispatchArm && <div className="pointer-events-none absolute bottom-8 left-3 mono rounded bg-bg/80 px-2 py-1 text-[10px] text-fg-2">{hoverInfo}</div>}
     </div>
   )
 })
 
-function bedFeatures(grid: GeoJSON.FeatureCollection, beds: { id: string; crop: string }[]): GeoJSON.FeatureCollection {
+/** One label per bed, placed on its middle section and rotated along the bed. */
+function bedLabels(layout: GeoJSON.FeatureCollection): GeoJSON.FeatureCollection {
   const byBed = new Map<string, GeoJSON.Feature<GeoJSON.Polygon>[]>()
-  for (const f of grid.features) { const b = f.properties?.bed_id as string | undefined; if (b) (byBed.get(b) ?? byBed.set(b, []).get(b)!).push(f as GeoJSON.Feature<GeoJSON.Polygon>) }
+  for (const f of layout.features) {
+    if (f.properties?.layer !== 'section') continue
+    const b = String(f.properties.bed)
+    ;(byBed.get(b) ?? byBed.set(b, []).get(b)!).push(f as GeoJSON.Feature<GeoJSON.Polygon>)
+  }
   const out: GeoJSON.Feature[] = []
-  for (const [id, cells] of byBed) {
-    const crop = beds.find((b) => b.id === id)?.crop ?? cells[0].properties?.crop_type
-    try {
-      const u = cells.length === 1 ? cells[0] : turf.union(turf.featureCollection(cells))
-      if (u) { out.push({ type: 'Feature', geometry: u.geometry, properties: { id } }); const c = turf.centerOfMass(u); out.push({ type: 'Feature', geometry: c.geometry, properties: { id, label: `${id.replace('bed-', 'Bed ')} · ${crop}` } }) }
-    } catch { /* degenerate union */ }
+  for (const [bed, secs] of byBed) {
+    const mid = secs[Math.floor(secs.length / 2)]
+    const ring = mid.geometry.coordinates[0]
+    const rot = -turf.bearing(turf.point(ring[0]), turf.point(ring[1])) + 90
+    out.push({ type: 'Feature', geometry: turf.centroid(mid).geometry, properties: { label: `${bed.replace('bed-', 'Bed ')}  ${mid.properties?.crop}`, rot } })
   }
   return { type: 'FeatureCollection', features: out }
 }
 
-function paintCells(map: MLMap, grid: GeoJSON.FeatureCollection, layer: string) {
-  for (const f of grid.features) {
-    const p = { ...f.properties, ...(cellOverrides.get(String(f.properties?.h3)) ?? {}) } as Record<string, unknown>
+function paintSections(map: MLMap, layout: GeoJSON.FeatureCollection, layer: string) {
+  const weeds: GeoJSON.Feature[] = []
+  for (const f of layout.features) {
+    if (f.properties?.layer !== 'section') continue
+    const p = { ...f.properties, ...(sectionOverrides.get(String(f.properties.id)) ?? {}) } as Record<string, unknown>
     let color: string
-    if (p.kind !== 'crop') color = KIND_COLORS[String(p.kind)] ?? '#2d4436'
-    else if (layer === 'plan' || layer === 'crop') color = CROP_COLORS[String(p.crop_type)] ?? '#888'
-    else if (layer === 'moisture') color = ramp(Number(p.soil_moisture ?? 0.5), ['#8a6a3d', '#c9a96a', '#5cc8ff', '#1d5fd1'])
+    if (layer === 'plan' || layer === 'crop') color = CROP_COLORS[String(p.crop)] ?? '#888'
+    else if (layer === 'moisture') color = ramp(Number(p.moisture ?? 0.5), ['#8a6a3d', '#c9a96a', '#5cc8ff', '#1d5fd1'])
     else if (layer === 'health') color = ramp(Number(p.health ?? 1), ['#ff4d5e', '#f5c451', '#7ce38b'])
     else color = STATE_COLORS[String(p.state)] ?? '#6b5a3e'
-    map.setFeatureState({ source: 'hex', id: String(p.h3) }, { color })
+    map.setFeatureState({ source: 'layout', id: String(p.id) }, { color })
+    if (p.weeds) weeds.push({ type: 'Feature', geometry: turf.centroid(f as GeoJSON.Feature<GeoJSON.Polygon>).geometry, properties: { id: p.id } })
   }
-  if (cellOverrides.size) {
-    let dirty = false
-    for (const f of grid.features) {
-      const o = cellOverrides.get(String(f.properties?.h3))
-      if (o && 'weeds' in o && f.properties!.weeds !== o.weeds) { f.properties!.weeds = o.weeds; dirty = true }
-      if (o && 'state' in o && f.properties!.state !== o.state) { f.properties!.state = o.state; dirty = true }
-    }
-    if (dirty) (map.getSource('hex') as GeoJSONSource).setData(grid)
-  }
+  ;(map.getSource('weeds') as GeoJSONSource | undefined)?.setData({ type: 'FeatureCollection', features: weeds })
 }
+
 function ramp(v: number, stops: string[]) { const t = Math.max(0, Math.min(1, v)) * (stops.length - 1); const i = Math.min(stops.length - 2, Math.floor(t)); const k = t - i; const a = hex(stops[i]), b = hex(stops[i + 1]); return `rgb(${Math.round(a[0] + (b[0] - a[0]) * k)},${Math.round(a[1] + (b[1] - a[1]) * k)},${Math.round(a[2] + (b[2] - a[2]) * k)})` }
 function hex(h: string) { return [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)] }

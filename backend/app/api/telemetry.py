@@ -29,7 +29,7 @@ async def telemetry_history(robot_id: str, minutes: int = Query(10, le=1440), li
                             .order_by(Telemetry.time.desc()).limit(limit))).scalars().all()
     return [{"t": r.time.isoformat(), "x": r.x, "y": r.y, "z": r.z, "lat": r.lat, "lng": r.lng, "speed": r.speed,
              "battery_pct": r.battery_pct, "battery_v": r.battery_v, "motor_temp_c": r.motor_temp_c, "cpu_load": r.cpu_load,
-             "status": r.status, "h3": r.h3_index} for r in reversed(rows)]
+             "status": r.status} for r in reversed(rows)]
 
 
 @router.get("/analytics/yields")
@@ -40,9 +40,9 @@ async def yields(s: AsyncSession = Depends(get_session)):
         q = q.where(YieldRecord.farm_id == farm_id)
     rows = (await s.execute(q)).all()
     recent = (await s.execute(select(YieldRecord).order_by(YieldRecord.harvested_at.desc()).limit(25))).scalars().all()
-    return {"by_crop": [{"crop": c, "kg": round(float(kg), 2), "cells": n} for c, kg, n in rows],
+    return {"by_crop": [{"crop": c, "kg": round(float(kg), 2), "harvests": n} for c, kg, n in rows],
             "total_kg": round(sum(float(kg) for _, kg, _ in rows), 2),
-            "recent": [{"h3": r.h3_index, "crop": r.crop_type, "kg": r.kg, "robot": r.robot_id, "t": r.harvested_at.isoformat()}
+            "recent": [{"section": r.section_id, "crop": r.crop_type, "kg": r.kg, "robot": r.robot_id, "t": r.harvested_at.isoformat()}
                        for r in recent]}
 
 

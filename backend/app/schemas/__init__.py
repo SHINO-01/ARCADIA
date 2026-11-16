@@ -16,7 +16,6 @@ class Waypoint(BaseModel):
     x: float
     y: float
     z: float = 0.0
-    h3: str | None = None
     lat: float | None = None
     lng: float | None = None
 
@@ -38,7 +37,6 @@ class TelemetryFrame(BaseModel):
     mission_id: str | None = None
     lat: float | None = None
     lng: float | None = None
-    h3: str | None = None
     stamp: float | None = None
     latency_ms: float = 0.0
 
@@ -47,7 +45,7 @@ class SimEvent(BaseModel):
     """Domain event emitted by the simulation (Webots supervisor/robots or the headless twin)."""
     kind: str
     robot_id: str | None = None
-    h3: str | None = None
+    section: str | None = None   # bed section the event concerns, if any
     mission_id: str | None = None
     severity: Literal["INFO", "WARN", "ERROR"] = "INFO"
     payload: dict[str, Any] = Field(default_factory=dict)
@@ -74,18 +72,20 @@ class DiagnosticStatus(BaseModel):
 class FarmCreate(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     boundary: dict  # GeoJSON Feature / Polygon / FeatureCollection
-    resolution: int | None = Field(default=None, ge=7, le=14)
-    target_cells: int | None = Field(default=None, ge=20, le=5000)
     seed: int = 42
 
 
 class PlanRequest(BaseModel):
+    """Controlled-traffic layout + infrastructure parameters (metres)."""
     k_docks: int | None = Field(default=None, ge=1, le=12)
     k_storage: int | None = Field(default=None, ge=1, le=4)
     seed: int | None = None
-    road_spacing: int = Field(default=6, ge=3, le=20, description="hex rows between travel roads")
-    bed_width: int = Field(default=3, ge=1, le=19, description="road strips per crop bed band")
-    orientation: Literal["ew", "ns"] = "ew"
+    bed_width: float = Field(default=6.0, ge=1.5, le=24.0, description="cropped bed width")
+    lane_width: float = Field(default=2.4, ge=1.6, le=6.0, description="tramline width between beds")
+    headland_width: float = Field(default=10.0, ge=5.0, le=30.0, description="turning track inside the boundary")
+    section_length: float = Field(default=40.0, ge=10.0, le=200.0, description="bed section (work unit) length")
+    alley_spacing: float = Field(default=0.0, ge=0.0, le=1000.0, description="cross alleys every N m (0 = auto)")
+    orientation: Literal["auto", "ew", "ns"] = "auto"
     shuffle_crops: bool = False
 
 
@@ -118,8 +118,6 @@ class FarmOut(BaseModel):
     centroid_lat: float
     centroid_lng: float
     area_m2: float
-    h3_resolution: int
-    cell_count: int
     status: str
     plan: dict | None
     seed: int
@@ -131,7 +129,6 @@ class InfrastructureOut(BaseModel):
     id: str
     slug: str
     kind: str  # solar_dock | wind_dock | storage | repair_station
-    h3_index: str
     lat: float
     lng: float
     x: float
@@ -166,7 +163,7 @@ class RobotOut(BaseModel):
 
 class DispatchRequest(BaseModel):
     kind: MissionKind = "goto"
-    target_h3: str | None = None
+    target_section: str | None = None
     lat: float | None = None
     lng: float | None = None
     x: float | None = None
@@ -196,7 +193,7 @@ class MissionOut(BaseModel):
     status: str
     priority: int
     source: str
-    target_h3: str | None
+    target_section: str | None
     waypoints: list | None
     payload: dict | None
     result: dict | None

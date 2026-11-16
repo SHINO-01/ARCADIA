@@ -1,10 +1,10 @@
 // ARCADIA Webots Supervisor (extern controller + rclcpp node).
 //
 //  * ingests `world_load` Commands (JSON world config from the backend) and procedurally spawns
-//    terrain, hex crops, renewable docks, storage and the robot fleet from primitives
-//  * owns crop ground truth and runs the proximity-based mock CV (cell_observed events)
+//    terrain, bed sections and tracks, renewable docks, storage and the robot fleet from primitives
+//  * owns crop ground truth and runs the proximity-based mock CV (section_observed events)
 //  * reacts to robot work events (seeded / weeded / harvested) by mutating the crops
-//  * implements tow mechanics: a towed robot is dragged behind the Logistics AGV and re-parked
+//  * implements tow mechanics: a towed robot is dragged behind the Logistics AGV and left at the drop-off
 //  * broadcasts solar irradiance (compressed day cycle) so solar skins trickle-charge
 #include <algorithm>
 #include <chrono>
@@ -78,10 +78,10 @@ class ArcadiaSupervisor : public rclcpp::Node {
     return 9.0;
   }
 
-  void emit(const std::string &kind, const std::string &robot, const std::string &h3, const std::string &severity, const json &payload) {
+  void emit(const std::string &kind, const std::string &robot, const std::string &section, const std::string &severity, const json &payload) {
     Event e;
     e.stamp = now();
-    e.kind = kind; e.robot_id = robot; e.h3 = h3; e.severity = severity; e.payload_json = payload.dump();
+    e.kind = kind; e.robot_id = robot; e.section = section; e.severity = severity; e.payload_json = payload.dump();
     pub_event_->publish(e);
   }
 
@@ -96,13 +96,14 @@ class ArcadiaSupervisor : public rclcpp::Node {
           return;
         }
         if (world_.loaded) RCLCPP_INFO(get_logger(), "World revision changed - respawning the farm (controllers reconnect)");
-        RCLCPP_INFO(get_logger(), "Spawning farm '%s': %zu cells, %zu infra, %zu robots",
-                    cfg["farm"]["name"].get<std::string>().c_str(), cfg["hex"]["cells"].size(), cfg["infrastructure"].size(), cfg["robots"].size());
+        RCLCPP_INFO(get_logger(), "Spawning farm '%s': %zu bed sections, %zu tracks, %zu yard sites, %zu robots",
+                    cfg["farm"]["name"].get<std::string>().c_str(), cfg.value("sections", json::array()).size(),
+                    cfg.value("tracks", json::array()).size(), cfg["infrastructure"].size(), cfg["robots"].size());
         spawner_.load(cfg, world_);
         truth_.seed(cfg["farm"].value("seed", 42));
         truth_.initialise();
         sup_.step(int(dt_ * 1000));  // let the scene settle before controllers connect
-        emit("world_loaded", "", "", "INFO", json{{"source", "webots"}, {"cells", world_.cells.size()}, {"farm_id", world_.farm_id}});
+        emit("world_loaded", "", "", "INFO", json{{"source", "webots"}, {"sections", world_.sections.size()}, {"farm_id", world_.farm_id}});
         broadcastIrradiance();
         setOverviewCamera();
       } catch (const std::exception &e) {
@@ -157,15 +158,16 @@ class ArcadiaSupervisor : public rclcpp::Node {
       return;
     }
     if (e.kind == "seeded" || e.kind == "weeded" || e.kind == "harvested") {
-      truth_.onRobotEvent(e.kind, e.h3, p);
+      truth_.onRobotEvent(e.kind, e.robot_id, p.value("section", e.section), p);
     } else if (e.kind == "tow_attached") {
       auto it = world_.robots.find(e.robot_id);
       if (it != world_.robots.end()) { it->second.towing = p.value("target", ""); it->second.tow_attached = true; }
     } else if (e.kind == "tow_complete") {
       auto it = world_.robots.find(e.robot_id);
       if (it != world_.robots.end()) {
+        // The unit stays where it was delivered (the repair station apron), behind the AGV.
         auto tgt = world_.robots.find(it->second.towing);
-        if (tgt != world_.robots.end()) parkAtHome(tgt->second);
+        if (tgt != world_.robots.end() && tgt->second.node) tgt->second.node->resetPhysics();
         it->second.towing.clear(); it->second.tow_attached = false;
       }
     } else if (e.kind == "fault_cleared") {
@@ -210,16 +212,14 @@ class ArcadiaSupervisor : public rclcpp::Node {
     const double *v = r.node->getVelocity();
     double speed = std::hypot(v[0], v[1]);
     if (speed < 0.2) return;
-    double r2 = (world_.edge_m * 0.9) * (world_.edge_m * 0.9);
-    for (auto &[h3, c] : world_.cells) {
-      if (!c.waterlogged) continue;
-      double dx = c.x - p[0], dy = c.y - p[1];
-      if (dx * dx + dy * dy > r2) continue;
+    for (const auto &hz : world_.hazards) {  // waterlogged low spots on the tracks
+      double dx = hz.x - p[0], dy = hz.y - p[1];
+      if (dx * dx + dy * dy > hz.r * hz.r) continue;
       std::uniform_real_distribution<double> u(0.0, 1.0);
-      if (u(rng_) < 0.04 * dt_) {  // ~4 %/s inside a waterlogged bed
+      if (u(rng_) < 0.04 * dt_) {  // ~4 %/s while driving through the mud
         Command cmd;
         cmd.command_id = "terrain"; cmd.robot_id = r.id; cmd.kind = "chaos";
-        cmd.payload_json = json{{"fault", "stuck_terrain"}, {"params", {{"terrain", "waterlogged bed"}, {"h3", h3}, {"wheel_slip", 0.85}}},
+        cmd.payload_json = json{{"fault", "stuck_terrain"}, {"params", {{"terrain", "waterlogged track"}, {"hazard", hz.id}, {"wheel_slip", 0.85}}},
                                 {"source", "terrain"}}.dump();
         pub_cmd_->publish(cmd);
         r.stuck_cooldown = 30.0;
