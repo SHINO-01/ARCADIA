@@ -6,7 +6,9 @@ import { api } from '../lib/api'
 import { useLive } from '../store/live'
 import { useUI } from '../store/ui'
 
-const STREAM_URL = (import.meta.env.VITE_WEBOTS_STREAM_URL as string | undefined) || 'ws://localhost:1234'
+// Same origin by default: Caddy proxies /webots-stream to the native streaming server, so the 3D view also
+// works through a tunnel or a public domain. VITE_WEBOTS_STREAM_URL overrides it (e.g. ws://localhost:1234).
+const STREAM_URL = (import.meta.env.VITE_WEBOTS_STREAM_URL as string | undefined) || `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/webots-stream`
 
 export function WebotsView({ controls = true }: { controls?: boolean }) {
   const bridge = useLive((s) => s.bridge)

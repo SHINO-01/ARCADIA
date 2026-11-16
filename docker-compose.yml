@@ -80,7 +80,7 @@ services:
       context: ./frontend
       args:
         VITE_MAPBOX_TOKEN: ${VITE_MAPBOX_TOKEN:-}
-        VITE_WEBOTS_STREAM_URL: ${VITE_WEBOTS_STREAM_URL:-ws://localhost:1234}
+        VITE_WEBOTS_STREAM_URL: ${VITE_WEBOTS_STREAM_URL:-}
     mem_limit: 128m
     restart: unless-stopped
 
@@ -94,7 +94,7 @@ services:
     volumes:
       - pg_data:/var/lib/postgresql/data
     ports:
-      - "${POSTGRES_PORT:-55432}:5432"
+      - "127.0.0.1:${POSTGRES_PORT:-55432}:5432"   # localhost only: never expose the database
     mem_limit: 512m
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U arcadia -d arcadia"]
@@ -109,7 +109,7 @@ services:
     volumes:
       - redis_data:/data
     ports:
-      - "${REDIS_PORT:-6379}:6379"
+      - "127.0.0.1:${REDIS_PORT:-6379}:6379"
     mem_limit: 160m
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
@@ -117,6 +117,28 @@ services:
       timeout: 3s
       retries: 20
     restart: unless-stopped
+
+  # Public URL without opening ports (setup.sh --tunnel): free Cloudflare quick tunnel, random
+  # https://*.trycloudflare.com address that changes on restart. WebSockets pass through.
+  tunnel:
+    image: cloudflare/cloudflared:latest
+    command: ["tunnel", "--no-autoupdate", "--url", "http://caddy:80"]
+    depends_on:
+      - caddy
+    restart: unless-stopped
+    profiles: ["tunnel"]
+
+  # Your own domain (setup.sh --tunnel-token TOKEN): a named tunnel created in the Cloudflare
+  # dashboard, public hostname -> http://caddy:80
+  tunnel-named:
+    image: cloudflare/cloudflared:latest
+    command: ["tunnel", "--no-autoupdate", "run"]
+    environment:
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:-}
+    depends_on:
+      - caddy
+    restart: unless-stopped
+    profiles: ["tunnel-named"]
 
 volumes:
   pg_data:

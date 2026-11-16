@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
-"""Create, plan and activate a demo farm (no dependencies beyond the stdlib)."""
+"""Create a demo farm end to end through the API (stdlib only):
+boundary -> site analysis -> adaptive layout -> recommended crop -> activation."""
 import json
 import os
 import sys
+import time
 import urllib.request
 
 BASE = os.environ.get("ARCADIA_API", "http://localhost:8080/api")
@@ -15,21 +17,36 @@ DEMO = {
 }
 
 
-def call(method, path, body=None):
+def call(method, path, body=None, timeout=300):
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(BASE + path, data=data, method=method, headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=60) as r:
+    with urllib.request.urlopen(req, timeout=timeout) as r:
         return json.loads(r.read() or b"null")
 
 
+def say(msg):
+    print(f"    {msg}", flush=True)
+
+
 farm = call("POST", "/farms", DEMO)
-print(f"farm {farm['id']}  area={farm['area_m2']:.0f} m2")
-farm = call("POST", f"/farms/{farm['id']}/plan", {})
-p = farm["plan"]
-L = p["layout"]
-print(f"planned: {len(L['beds'])} beds, {L['sections']} sections, {L['tramlines']} tramlines, "
-      f"{p['k_docks']} docks, {p['k_storage']} storage, mean travel {p['mean_travel_m']} m")
-farm = call("POST", f"/farms/{farm['id']}/activate")
-print(f"activated farm {farm['id']} -> status {farm['status']}")
-print(json.dumps(call("GET", "/system/status")["bridge"], indent=1))
+fid = farm["id"]
+say(f"farm {farm['name']}: {farm['area_m2'] / 10000:.1f} ha")
+call("POST", f"/farms/{fid}/analyze")
+for _ in range(200):
+    st = (call("GET", f"/farms/{fid}/analysis").get("status") or {})
+    if st.get("done"):
+        break
+    time.sleep(3)
+a = call("GET", f"/farms/{fid}/analysis")
+say(f"site: {len((a.get('imagery') or {}).get('roads', []))} roads detected, {(a.get('soil') or {}).get('texture')} soil, "
+    f"{(a.get('climate') or {}).get('annual_rain_mm')} mm/yr ({(a.get('climate') or {}).get('source')})")
+farm = call("POST", f"/farms/{fid}/plan", {})
+L = farm["plan"]["layout"]
+say(f"layout: {L['sections']} sections in {len(L.get('zones', []))} zone(s), {L['cropped_pct']}% cropped")
+crops = call("GET", f"/farms/{fid}/crops")
+best = next((c for c in crops if c["recommended"]), crops[0])
+say(f"crop: {best['name']} (median {best['yield_t_ha']['p50']} t/ha, margin ${best['margin_usd_ha']['p50']:.0f}/ha)")
+call("POST", f"/farms/{fid}/crop", {"crop": best["crop"]})
+farm = call("POST", f"/farms/{fid}/activate")
+say(f"activated: {farm['status']}")
 sys.exit(0)

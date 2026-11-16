@@ -105,9 +105,14 @@ class RosBridgeClient:
                 self._connected.clear()
                 self._ws = None
                 if was and self.on_disconnect:
-                    r = self.on_disconnect()
-                    if asyncio.iscoroutine(r):
-                        await r
+                    # A failing callback (e.g. Redis briefly down) must never end this loop, or the
+                    # client would stop retrying for good.
+                    try:
+                        r = self.on_disconnect()
+                        if asyncio.iscoroutine(r):
+                            await r
+                    except Exception:  # noqa: BLE001
+                        log.exception("rosbridge on_disconnect callback failed")
             if not self._stop.is_set():
                 await asyncio.sleep(self._retry_delay())
 
@@ -130,9 +135,13 @@ class RosBridgeClient:
         if op == "publish":
             sub = self._subs.get(msg.get("topic", ""))
             if sub:
-                r = sub[1](msg.get("msg", {}))
-                if asyncio.iscoroutine(r):
-                    await r
+                # a handler failure (database or Redis hiccup) is not a rosbridge failure: keep the link
+                try:
+                    r = sub[1](msg.get("msg", {}))
+                    if asyncio.iscoroutine(r):
+                        await r
+                except Exception:  # noqa: BLE001
+                    log.exception("handler for %s failed", msg.get("topic"))
         elif op == "service_response":
             fut = self._pending.pop(msg.get("id", ""), None)
             if fut and not fut.done():

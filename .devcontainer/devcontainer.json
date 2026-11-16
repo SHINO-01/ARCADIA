@@ -1,0 +1,10 @@
+{
+  "name": "ARCADIA",
+  "image": "mcr.microsoft.com/devcontainers/base:ubuntu",
+  "features": { "ghcr.io/devcontainers/features/docker-in-docker:2": {} },
+  "hostRequirements": { "cpus": 2, "memory": "8gb" },
+  "postCreateCommand": "./setup.sh --cloud --yes",
+  "postStartCommand": "docker compose up -d",
+  "forwardPorts": [8080],
+  "portsAttributes": { "8080": { "label": "ARCADIA dashboard", "onAutoForward": "openBrowser" } }
+}

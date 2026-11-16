@@ -19,21 +19,31 @@ ARCADIA/
 
 ## Quick start
 
+One line (Docker is installed if missing; free ports are picked; a random database password is written to `.env`):
+
 ```bash
-# 1. ROS 2 Lyrical (once, needs sudo)
-sudo bash robotics/scripts/install_ros2_apt.sh
+git clone https://github.com/SHINO-01/ARCADIA.git && ARCADIA/setup.sh
+```
 
-# 2. Web stack (Docker)
-cp .env.example .env            # optional: VITE_MAPBOX_TOKEN for Mapbox imagery (Esri imagery is the default)
-make up                         # http://localhost:8080  (API docs: /api/docs)
+| Option | Effect |
+|---|---|
+| `--full` | also install ROS 2 Lyrical and Webots R2025a natively and build the workspace (Ubuntu x86-64), then `make sim` |
+| `--tunnel` | public https URL through a free Cloudflare quick tunnel (`--tunnel-token TOKEN` for your own domain) |
+| `--cloud` | server mode: headless digital twin, databases on localhost only |
+| `--demo` | create, analyse, lay out, plant and activate a demo farm |
+| `--port N`, `--project NAME` | dashboard port; compose project name for a second install on one machine |
 
-# 3. Native robotics — Webots R2025a as a user-space tarball (the snap cannot open a Wayland display)
-bash robotics/scripts/install_webots_tarball.sh     # -> ~/opt/webots, sets WEBOTS_HOME in ~/.bashrc
-make robotics-build
-make sim                        # Webots + supervisor + uav-1/ugv-1/agv-1 + rosbridge :9090 + diagnostics
+Once the repository is public: `curl -fsSL https://raw.githubusercontent.com/SHINO-01/ARCADIA/main/setup.sh | bash -s -- --tunnel`.
+Free hosting options are compared in [docs/HOSTING.md](docs/HOSTING.md).
 
-# 4. Demo farm (or draw one in the dashboard: Plan → Draw boundary → Generate → Plan → Activate)
-make seed-demo
+Manual steps, if you prefer:
+
+```bash
+sudo bash robotics/scripts/install_ros2_apt.sh            # ROS 2 Lyrical (once)
+cp .env.example .env && make up                           # web stack: http://localhost:8080
+bash robotics/scripts/install_webots_tarball.sh           # Webots R2025a -> ~/opt/webots
+make robotics-build && make sim                           # Webots + fleet + rosbridge :9090
+make seed-demo                                            # or set up a farm in the dashboard
 ```
 
 Without `make sim` the backend's **headless digital twin** drives the whole platform (same wire
