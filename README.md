@@ -38,7 +38,8 @@ git clone https://github.com/SHINO-01/ARCADIA.git && ARCADIA/setup.sh
 
 | Option | Effect |
 |---|---|
-| `--full` | also install ROS 2 Lyrical (apt, asks for sudo) and Webots R2025a (`~/opt/webots`), build the ROS 2 workspace and install the sim agent |
+| `--full` | also install ROS 2 Lyrical (apt, asks for sudo) and Webots R2025a (`~/opt/webots`) and build the ROS 2 workspace; start the simulation with `make sim` |
+| `--sim-agent` | with `--full`: also install the sim agent, so `docker compose up -d` / `down` start and stop the simulation too (off by default) |
 | `--demo` | create, analyse, lay out, plant and activate a demo farm |
 | `--tunnel` | public https URL through a free Cloudflare quick tunnel (`--tunnel-token TOKEN` for your own domain) |
 | `--cloud` | server mode: headless digital twin only, databases on localhost only |
@@ -82,8 +83,8 @@ headless twin when it stops. `make sim-headless` runs Webots minimised without r
 
 ### Webots by hand (without the sim agent)
 
-This is the default unless you ran `make sim-agent-install` (`setup.sh --full` installs the agent; remove
-it with `make sim-agent-uninstall` to work this way).
+This is the default: the simulation only runs when you start it. (If you opted into the sim agent with
+`make sim-agent-install` or `setup.sh --full --sim-agent`, remove it with `make sim-agent-uninstall` to work this way.)
 
 1. **Install once** (Ubuntu x86-64 desktop):
 
@@ -131,7 +132,7 @@ a second fleet.
 
 ### Optional: the sim agent
 
-`make sim-agent-install` installs a systemd user service that starts `make sim`
+Opt-in. `make sim-agent-install` (or `setup.sh --full --sim-agent`) installs a systemd user service that starts `make sim`
 when `docker compose up -d` brings the stack up and stops it once the stack has been down for 45 s,
 so the single Docker command runs the whole project. `ARCADIA_SIM_GUI=false` in `.env` keeps Webots
 minimised; `make sim-agent-logs` follows it.

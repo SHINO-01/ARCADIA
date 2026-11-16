@@ -12,6 +12,8 @@
 # Options
 #   --full              also install native ROS 2 + Webots and build the robotics workspace
 #                       (Ubuntu x86-64; asks for sudo), then start it with `make sim`
+#   --sim-agent         with --full: install the sim agent, so `docker compose up -d` / `down` also
+#                       start and stop the simulation (systemd user service; off by default)
 #   --cloud             server mode: headless twin only, databases bound to localhost
 #   --tunnel            publish the dashboard through a free Cloudflare quick tunnel (random https URL)
 #   --tunnel-token TOK  publish through your own named Cloudflare tunnel (your domain)
@@ -24,10 +26,11 @@
 set -euo pipefail
 
 REPO_URL="${ARCADIA_REPO:-https://github.com/SHINO-01/ARCADIA.git}"
-BRANCH=main; DIR=ARCADIA; PROJECT=""; PORT=""; FULL=0; CLOUD=0; TUNNEL=0; TOKEN=""; DEMO=0; YES=0
+BRANCH=main; DIR=ARCADIA; PROJECT=""; PORT=""; FULL=0; AGENT=0; CLOUD=0; TUNNEL=0; TOKEN=""; DEMO=0; YES=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --full) FULL=1 ;;
+    --sim-agent) AGENT=1 ;;
     --cloud) CLOUD=1 ;;
     --tunnel) TUNNEL=1 ;;
     --tunnel-token) TOKEN="${2:?--tunnel-token needs a token}"; shift ;;
@@ -37,7 +40,7 @@ while [[ $# -gt 0 ]]; do
     --branch) BRANCH="${2:?--branch needs a name}"; shift ;;
     --project) PROJECT="${2:?--project needs a name}"; shift ;;
     -y|--yes) YES=1 ;;
-    -h|--help) sed -n '2,27p' "${BASH_SOURCE[0]:-$0}" 2>/dev/null | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,25p' "${BASH_SOURCE[0]:-$0}" 2>/dev/null | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown option: $1 (try --help)" >&2; exit 2 ;;
   esac
   shift
@@ -153,11 +156,16 @@ if [[ $FULL -eq 1 ]]; then
   step "Building the ROS 2 workspace"
   export WEBOTS_HOME="${WEBOTS_HOME:-$HOME/opt/webots}"
   make robotics-build
-  if have systemctl && systemctl --user show-environment >/dev/null 2>&1; then
-    step "Installing the sim agent (the simulation follows docker compose up/down)"
-    scripts/sim_agent.sh install || warn "sim agent not installed; start the simulation with make sim"
+  if [[ $AGENT -eq 1 ]]; then
+    if have systemctl && systemctl --user show-environment >/dev/null 2>&1; then
+      step "Installing the sim agent (the simulation follows docker compose up/down)"
+      scripts/sim_agent.sh install || warn "sim agent not installed; start the simulation with make sim"
+    else
+      warn "--sim-agent needs a systemd user session; start the simulation with make sim"
+    fi
   fi
 fi
+[[ $AGENT -eq 1 && $FULL -eq 0 ]] && warn "--sim-agent only applies with --full (it needs the native simulation); ignored"
 
 if [[ $DEMO -eq 1 ]]; then
   step "Creating the demo farm (site analysis, adaptive layout, crop choice, activation)"
@@ -170,6 +178,8 @@ echo "    dashboard   ${B}${URL}${N}"
 [[ -n "$PUBLIC" ]] && echo "    public      ${B}${PUBLIC}${N}   (Cloudflare quick tunnel, changes on restart)"
 [[ -n "$TOKEN" ]] && echo "    public      your Cloudflare tunnel hostname"
 echo "    API docs    ${URL}/api/docs"
-if [[ $FULL -eq 1 ]]; then echo "    simulator   starts with the stack (sim agent); logs: make sim-agent-logs"
+if [[ $FULL -eq 1 && $AGENT -eq 1 ]] && systemctl --user is-active --quiet arcadia-sim 2>/dev/null; then
+  echo "    simulator   starts with the stack (sim agent); logs: make sim-agent-logs"
+elif [[ $FULL -eq 1 ]]; then echo "    simulator   cd $ROOT && make sim      (Webots + ROS 2; the dashboard switches to it)"
 elif [[ $CLOUD -eq 0 ]]; then echo "    simulator   optional: $0 --full, then make sim"; fi
 echo "    stop        cd $ROOT && ${DOCKER[*]} compose down"
