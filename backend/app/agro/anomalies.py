@@ -26,8 +26,6 @@ from scipy import stats
 from app.agro.climate import harmonic
 from app.agro.weather import Day
 
-SEV_ORDER = {"info": 0, "warning": 1, "critical": 2}
-
 
 class AnomalyDetector:
     def __init__(self, climate: dict, section_ids: list[str], neighbours: list[list[int]]):

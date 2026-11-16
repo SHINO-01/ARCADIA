@@ -187,8 +187,10 @@ function AnomalyCard() {
 function ScenarioLab({ irrigation }: { irrigation?: WorldState['irrigation'] }) {
   const notify = useUI((s) => s.notify)
   const [intensity, setIntensity] = useState(1)
-  const [irr, setIrr] = useState(irrigation)
-  useEffect(() => setIrr(irrigation), [irrigation])
+  // local edits override the server value until the next state refresh replaces `irrigation`
+  const [edit, setEdit] = useState<{ base: WorldState['irrigation']; value: WorldState['irrigation'] } | null>(null)
+  const irr = edit && edit.base === irrigation ? edit.value : irrigation
+  const setIrr = (value: WorldState['irrigation']) => setEdit({ base: irrigation, value })
   const run = (kind: string, days: number) => worldApi.addScenario({ kind, days, intensity })
     .then((s) => notify(`${s.label} for ${s.days} day${s.days > 1 ? 's' : ''}`, 'ok')).catch((e) => notify(e.message, 'err'))
   return (

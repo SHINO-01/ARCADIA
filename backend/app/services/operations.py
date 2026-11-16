@@ -20,7 +20,7 @@ from datetime import date
 import numpy as np
 
 from app.agro.crops import CROPS, sow_months_for
-from app.agro.model import FALLOW, FLOWERING, GRAIN_FILL, RIPE, SOWN, VEGETATIVE, FieldModel
+from app.agro.model import FALLOW, GRAIN_FILL, RIPE, SOWN, VEGETATIVE, FieldModel
 
 KINDS = ("harvest", "spray", "weed", "fertilise", "seed")          # priority order
 RATE_HA_H = {"seed": 2.0, "fertilise": 4.0, "weed": 1.5, "spray": 5.0, "harvest": 1.2}
@@ -132,4 +132,3 @@ class Operations:
 
 
 __all__ = ["Operations", "KINDS", "EVENT", "KIND_OF_EVENT", "N_RATE", "RATE_HA_H"]
-_ = FLOWERING

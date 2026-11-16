@@ -7,7 +7,6 @@ import redis.asyncio as redis_async
 from app.core.config import settings
 
 CH_TELEMETRY = "arcadia:telemetry"      # sim -> dashboards (high-rate, throttled)
-CH_EVENTS = "arcadia:events"            # sim -> backend domain events
 CH_COMMANDS = "arcadia:commands"        # backend/celery -> sim (dispatch, chaos, world load)
 CH_DASHBOARD = "arcadia:dashboard"      # backend -> dashboards (fleet, tasks, incidents, energy)
 KEY_FLEET = "arcadia:fleet"             # hash robot_id -> json state

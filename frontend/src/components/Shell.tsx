@@ -1,22 +1,13 @@
 /** Mission-control shell: left navigation rail + status bar with the simulation clock. */
 import { useEffect, useState } from 'react'
-import { Activity, AlertTriangle, BarChart3, Box, Database, Gauge, Globe2, Map as MapIcon, Radar, Radio, Satellite } from 'lucide-react'
+import { Activity, Database, Gauge, Radio, Satellite } from 'lucide-react'
 import { clsx } from 'clsx'
 import { useLive } from '../store/live'
+import { VIEWS } from '../lib/nav'
 import { useUI, type View } from '../store/ui'
 import { useWorld } from '../store/world'
 import { WorldClock } from '../views/WorldView'
 import { Dot } from './ui'
-
-const VIEWS: { id: View; label: string; icon: typeof MapIcon; key: string }[] = [
-  { id: 'plan', label: 'Farm', icon: MapIcon, key: '1' },
-  { id: 'world', label: 'World', icon: Globe2, key: '2' },
-  { id: 'ops', label: 'Operations', icon: Radar, key: '3' },
-  { id: 'twin', label: '3D Twin', icon: Box, key: '4' },
-  { id: 'alerts', label: 'Alerts', icon: AlertTriangle, key: '5' },
-  { id: 'analytics', label: 'Analytics', icon: BarChart3, key: '6' },
-]
-export const VIEW_KEYS = Object.fromEntries(VIEWS.map((v) => [v.key, v.id])) as Record<string, View>
 
 export function Logo({ size = 28 }: { size?: number }) {
   return (
@@ -91,7 +82,7 @@ export function StatusBar({ fps }: { fps: number }) {
 }
 
 function WallClock() {
-  const [t, setT] = useState(new Date())
+  const [t, setT] = useState(() => new Date())
   useEffect(() => { const id = setInterval(() => setT(new Date()), 1000); return () => clearInterval(id) }, [])
   return <span className="mono text-fg-3" title="wall clock">{t.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
 }

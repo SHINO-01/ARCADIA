@@ -42,7 +42,7 @@ from app.models import Anomaly, Farm, FarmDaily, FieldSection, WeatherDaily, Wor
 from app.schemas import Command
 from app.services import fleet
 from app.services.field import field_of_farm
-from app.services.operations import EVENT, KIND_OF_EVENT, N_RATE, Operations
+from app.services.operations import CLAIM_TTL_S, KIND_OF_EVENT, N_RATE, Operations
 
 log = logging.getLogger("arcadia.world")
 
@@ -353,7 +353,7 @@ class WorldEngine:
             except (TypeError, json.JSONDecodeError):
                 stale.append(k)
                 continue
-            if now - c.get("ts", 0) > 1200:
+            if now - c.get("ts", 0) > CLAIM_TTL_S:
                 stale.append(k)
             else:
                 out[k] = c
@@ -492,18 +492,16 @@ class WorldEngine:
         await r.set(KEY_OPS, json.dumps({"farm_id": self.farm_id, "pending": pend, "workable": self.ops.workable,
                                          "harvest_ok": getattr(self.ops, "harvest_ok", True)}))
 
-    def _visual(self, i: int) -> tuple:
+    def _visual(self, i: int, moist: float) -> tuple:
+        """Rendered state of section i: height, colour and weed marker (moisture precomputed)."""
         m = self.model
         s = m.s
         st = int(s["stage"][0, i])
-        moist = float(np.clip(m.moisture()[0, i], 0, 1.5))
-        soil = _lerp(SOIL_DRY, SOIL_WET, moist)
-        if s["pond"][0, i] > 3:
-            soil = POND
+        soil = POND if s["pond"][0, i] > 3 else _lerp(SOIL_DRY, SOIL_WET, moist)
         h = float(s["height"][0, i])
         weeds = bool(s["weed"][0, i] > 0.15)
         crop = m.crop_keys[i]
-        if st in (FALLOW,):
+        if st == FALLOW:
             rgb, h = soil, 0.05
         elif st == SOWN:
             rgb, h = _lerp(soil, GREEN, 0.15), 0.06
@@ -525,8 +523,9 @@ class WorldEngine:
 
     async def _push_field(self) -> None:
         delta = {}
+        moist = np.clip(self.model.moisture()[0], 0, 1.5)  # once for the whole field
         for i, sid in enumerate(self.ids):
-            v = self._visual(i)
+            v = self._visual(i, float(moist[i]))
             if self._sent.get(sid) != v:
                 delta[sid] = list(v)
                 self._sent[sid] = v
@@ -639,4 +638,3 @@ class WorldEngine:
 
 
 world = WorldEngine()
-_ = (RIPE, EVENT, FLOWERING)

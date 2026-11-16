@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import heapq
 import math
-import time
 from dataclasses import dataclass, field
 
 TIME_COMPRESSION = 12.0
@@ -313,7 +312,6 @@ class Behaviour:
             return
         kind = m.get("kind")
         wps = m.get("waypoints") or []
-        last = self.wp_i == len(wps) - 1
         if kind == "tow" and self.tow_phase == 0:
             if self.wp_i < self.pickup_index:  # still on the road leg towards the pickup
                 self.wp_i += 1

@@ -12,9 +12,8 @@ from shapely.geometry import Polygon
 
 from app.services.geo import Origin, polygon_area_m2, polygon_from_geojson
 
-from app.agro.crops import CROPS, DEFAULT_CROP  # noqa: E402
+from app.agro.crops import CROPS  # noqa: E402
 
-CROP_TYPES = list(CROPS)
 CROP_HEIGHT_M = {k: c.height_max for k, c in CROPS.items()}
 
 MAX_FIELD_AREA_M2 = 2_000_000.0  # 200 ha: beyond this the local sim gets too heavy

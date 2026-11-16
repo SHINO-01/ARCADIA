@@ -29,7 +29,6 @@ SURVEY_BATCH = 24
 MIN_BATTERY = 30.0
 UGV_TYPES = ("seeder_ugv", "cropcare_ugv", "harvester_ugv")
 UAV_ALT = 6.0
-PLANTED = ("seeded", "growing", "ripe")
 
 # Battery percent consumed per metre at cruise (compressed sim time), used for range checks.
 PCT_PER_M = {"scout_uav": 0.04, "logistics_agv": 0.02}

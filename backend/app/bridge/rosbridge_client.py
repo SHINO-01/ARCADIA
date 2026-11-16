@@ -11,7 +11,6 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-import websockets
 from websockets.asyncio.client import connect
 
 log = logging.getLogger("arcadia.rosbridge")
@@ -66,13 +65,6 @@ class RosBridgeClient:
             except (asyncio.CancelledError, Exception):
                 pass
             self._task = None
-
-    async def wait_connected(self, timeout: float | None = None) -> bool:
-        try:
-            await asyncio.wait_for(self._connected.wait(), timeout)
-            return True
-        except asyncio.TimeoutError:
-            return False
 
     async def _run(self) -> None:
         while not self._stop.is_set():

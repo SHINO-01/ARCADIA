@@ -15,16 +15,6 @@ export function Panel({ title, right, children, className, bodyClass }: { title?
   )
 }
 
-export function Stat({ label, value, sub, tone }: { label: string; value: ReactNode; sub?: ReactNode; tone?: 'ok' | 'warn' | 'bad' }) {
-  return (
-    <div className="rounded-md border border-line bg-panel-2/60 px-2.5 py-2">
-      <div className="text-[10px] uppercase tracking-wide text-fg-3">{label}</div>
-      <div className={clsx('mono text-base font-semibold leading-tight', tone === 'ok' && 'text-leaf', tone === 'warn' && 'text-sun', tone === 'bad' && 'text-alert')}>{value}</div>
-      {sub && <div className="text-[10px] text-fg-3">{sub}</div>}
-    </div>
-  )
-}
-
 export function Dot({ color, pulse }: { color: string; pulse?: boolean }) {
   return (
     <span className="relative inline-flex h-2 w-2">

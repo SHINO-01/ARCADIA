@@ -3,7 +3,8 @@ import { clsx } from 'clsx'
 import { FarmMap, type FarmMapHandle } from './components/FarmMap'
 import { CommandBar } from './components/CommandBar'
 import { Legend } from './components/Legend'
-import { NavRail, StatusBar, VIEW_KEYS } from './components/Shell'
+import { NavRail, StatusBar } from './components/Shell'
+import { VIEW_KEYS } from './lib/nav'
 import { Onboarding } from './components/Onboarding'
 import { WorldView } from './views/WorldView'
 import { IncidentModal } from './panels/IncidentsPanel'
@@ -11,9 +12,6 @@ import { AlertsView, AnalyticsView, OpsView, PlanView, TwinView } from './views/
 import { api } from './lib/api'
 import { useLive } from './store/live'
 import { useUI } from './store/ui'
-
-// Debug handle for the browser console (inspection only): window.__arcadia.ui.getState()
-;(window as unknown as { __arcadia: unknown }).__arcadia = { ui: useUI }
 
 export default function App() {
   const connect = useLive((s) => s.connect)
@@ -78,13 +76,13 @@ export default function App() {
           <div className={clsx('absolute overflow-hidden rounded-lg', !mapVisible && 'pointer-events-none opacity-0')}
             style={rect && mapVisible ? { top: rect.top, left: rect.left, width: rect.width, height: rect.height } : { top: 0, left: 0, width: 2, height: 2 }}>
             <FarmMap ref={mapRef} visible={mapVisible} onDrawn={(feature, areaM2) => setDrawn({ feature, areaM2 })} onFps={setFps} />
-            {view === 'plan' && farm?.plan && <div className="pointer-events-none absolute bottom-3 left-3"><Legend /></div>}
-            {view === 'ops' && farm?.plan && <div className="pointer-events-none absolute left-3 top-3"><Legend compact /></div>}
+            {view === 'plan' && farm?.plan && <div className="pointer-events-none absolute bottom-3 left-3 z-20"><Legend /></div>}
+            {view === 'ops' && farm?.plan && <div className="pointer-events-none absolute left-3 top-3 z-20"><Legend compact /></div>}
             {view === 'ops' && <CommandBar />}
             {view === 'plan' && onboarding && <Onboarding onClose={() => setOnboarding(false)}
               onLocate={(lng, lat) => mapRef.current?.flyTo(lng, lat, 15.5)}
               onDraw={() => { setOnboarding(false); mapRef.current?.startDraw() }} />}
-            {view === 'ops' && <div className="pointer-events-none absolute right-12 top-3 rounded-md bg-bg/80 px-2 py-1 text-[10px] text-fg-3">click unit · ctrl+click multi · right-click move · shift+right-click waypoint</div>}
+            {view === 'ops' && <div className="pointer-events-none absolute right-12 top-3 z-20 rounded-md bg-bg/80 px-2 py-1 text-[10px] text-fg-3">click unit · ctrl+click multi · right-click move · shift+right-click waypoint</div>}
           </div>
         </main>
       </div>

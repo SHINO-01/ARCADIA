@@ -9,7 +9,6 @@ from pydantic import BaseModel, Field, model_validator
 # ----------------------------------------------------------------------------- wire protocol
 FaultKind = Literal["motor_jam", "battery_drop", "network_latency", "sensor_glitch", "stuck_terrain"]
 MissionKind = Literal["survey", "seed", "fertilise", "weed", "spray", "harvest", "tow", "charge", "goto", "patrol"]
-RobotStatus = Literal["idle", "active", "charging", "fault", "stranded", "towing", "towed", "offline", "returning"]
 
 
 class Waypoint(BaseModel):

@@ -115,8 +115,6 @@ export const ROBOT_COLOR: Record<string, string> = {
 }
 export const INFRA_COLOR: Record<string, string> = { solar_dock: '#f5c451', wind_dock: '#5cc8ff', storage: '#c7a4ff', repair_station: '#ff9f6b', road: '#9aa3a7' }
 export const TRACK_COLOR: Record<string, string> = { headland: '#b39b78', alley: '#b39b78', spur: '#a7a39a', lane: '#8f7a5c' }
-export const TRACK_LABEL: Record<string, string> = { headland: 'Headland (turning track)', alley: 'Farm track / cross alley', spur: 'Yard spur', lane: 'Tramline (wheel lane)' }
-export const INFRA_LABEL: Record<string, string> = { solar_dock: 'Solar charging dock', wind_dock: 'Wind charging dock', storage: 'Robot storage', repair_station: 'Repair station', road: 'Travel road' }
 export const CROP_COLORS: Record<string, string> = { wheat: '#e2c27a', maize: '#f0a742', soybean: '#8fd17a', soy: '#8fd17a', tomato: '#ff6b5e', lettuce: '#5fd7a0' }
 
 export const STATUS_COLOR: Record<string, string> = {

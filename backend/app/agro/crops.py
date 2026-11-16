@@ -93,9 +93,6 @@ DEFAULT_CROP = "maize"
 CROP_HEIGHT_M_ALL = {k: c.height_max for k, c in CROPS.items()}
 
 
-def get_crop(key: str) -> Crop:
-    return CROPS.get(key, CROPS[DEFAULT_CROP])
-
 
 def sow_months_for(crop: Crop, lat: float) -> tuple[int, ...]:
     """Sowing months for the hemisphere of `lat`."""

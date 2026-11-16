@@ -1,5 +1,5 @@
 /** Lightweight SVG charts (no chart library): responsive, hover crosshair + tooltip, legends. */
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
 function useWidth<T extends HTMLElement>() {
   const ref = useRef<T>(null)
@@ -142,15 +142,3 @@ export function StackBar({ parts, height = 10 }: { parts: { label: string; value
   )
 }
 
-export function Ring({ value, size = 44, stroke = 5, color = 'var(--color-leaf)', children }: { value: number; size?: number; stroke?: number; color?: string; children?: ReactNode }) {
-  const r = (size - stroke) / 2
-  const c = 2 * Math.PI * r
-  return (
-    <div className="relative inline-flex items-center justify-center" style={{ width: size, height: size }}>
-      <svg width={size} height={size} className="-rotate-90"><circle cx={size / 2} cy={size / 2} r={r} stroke="var(--color-line)" strokeWidth={stroke} fill="none" />
-        <circle cx={size / 2} cy={size / 2} r={r} stroke={color} strokeWidth={stroke} fill="none" strokeLinecap="round" strokeDasharray={c}
-          strokeDashoffset={c * (1 - Math.max(0, Math.min(1, value)))} className="transition-[stroke-dashoffset] duration-700" /></svg>
-      <div className="absolute inset-0 flex items-center justify-center">{children}</div>
-    </div>
-  )
-}

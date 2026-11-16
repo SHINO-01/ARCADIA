@@ -73,16 +73,20 @@ def fetch_mosaic(bbox: tuple[float, float, float, float], lat: float, max_px: in
     W, H = (tx1 - tx0 + 1) * TILE, (ty1 - ty0 + 1) * TILE
     mosaic = np.zeros((H, W, 3), np.uint8)
     CACHE.mkdir(parents=True, exist_ok=True)
+    tiles = [(tx, ty) for ty in range(ty0, ty1 + 1) for tx in range(tx0, tx1 + 1)]
     with httpx.Client(timeout=timeout, headers={"User-Agent": "ARCADIA farm planner"}) as client:
-        for ty in range(ty0, ty1 + 1):
-            for tx in range(tx0, tx1 + 1):
-                f = CACHE / f"{z}_{tx}_{ty}.jpg"
-                if not f.exists():
-                    r = client.get(TILE_URL.format(z=z, x=tx, y=ty))
-                    r.raise_for_status()
-                    f.write_bytes(r.content)
-                im = np.asarray(Image.open(f).convert("RGB"))
-                mosaic[(ty - ty0) * TILE:(ty - ty0 + 1) * TILE, (tx - tx0) * TILE:(tx - tx0 + 1) * TILE] = im
+        def get(t: tuple[int, int]) -> None:
+            f = CACHE / f"{z}_{t[0]}_{t[1]}.jpg"
+            if not f.exists():
+                r = client.get(TILE_URL.format(z=z, x=t[0], y=t[1]))
+                r.raise_for_status()
+                f.write_bytes(r.content)
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            list(pool.map(get, tiles))
+    for tx, ty in tiles:
+        im = np.asarray(Image.open(CACHE / f"{z}_{tx}_{ty}.jpg").convert("RGB"))
+        mosaic[(ty - ty0) * TILE:(ty - ty0 + 1) * TILE, (tx - tx0) * TILE:(tx - tx0 + 1) * TILE] = im
     # crop to the bbox
     cx0, cy0 = int(x0 - tx0 * TILE), int(y0 - ty0 * TILE)
     cx1, cy1 = int(math.ceil(x1 - tx0 * TILE)), int(math.ceil(y1 - ty0 * TILE))
@@ -129,9 +133,9 @@ def zhang_suen(mask: np.ndarray) -> np.ndarray:
             P2, P3, P4 = img[:-2, 1:-1], img[:-2, 2:], img[1:-1, 2:]
             P5, P6, P7 = img[2:, 2:], img[2:, 1:-1], img[2:, :-2]
             P8, P9 = img[1:-1, :-2], img[:-2, :-2]
-            seq = [P2, P3, P4, P5, P6, P7, P8, P9, P2]
-            B = sum(seq[:8])
-            A = sum(((seq[k] == 0) & (seq[k + 1] == 1)).astype(np.uint8) for k in range(8))
+            N = np.stack([P2, P3, P4, P5, P6, P7, P8, P9, P2])
+            B = N[:8].sum(axis=0)
+            A = ((N[:-1] == 0) & (N[1:] == 1)).sum(axis=0)
             c = img[1:-1, 1:-1]
             if step == 0:
                 m1, m2 = P2 * P4 * P6, P4 * P6 * P8
@@ -202,7 +206,7 @@ def trace_skeleton(skel: np.ndarray, min_len_px: float, spur_px: float) -> list[
     for path in paths:
         L = sum(math.dist(path[i], path[i + 1]) for i in range(len(path) - 1))
         dangling = deg.get(path[0], 0) == 1 or deg.get(path[-1], 0) == 1
-        if L < min_len_px or (dangling and L < spur_px and not (deg.get(path[0], 0) == 1 and deg.get(path[-1], 0) == 1)):
+        if min_len_px > L or (dangling and spur_px > L and not (deg.get(path[0], 0) == 1 and deg.get(path[-1], 0) == 1)):
             continue
         out.append(path)
     return out
@@ -252,12 +256,13 @@ def analyse_image(img: np.ndarray, gsd: float) -> dict:
     min_px = int(40 / (gsd * gsd))  # >= 40 m2
     lab, comps = _components(road, min_px)
     keep_mask = np.zeros_like(road)
+    boxes = ndi.find_objects(lab)
     for cid in comps:
-        comp = lab == cid
-        sk = zhang_suen(comp)
-        L = sk.sum()
+        sl = boxes[cid - 1]
+        comp = lab[sl] == cid  # thin each candidate inside its own bounding box
+        L = zhang_suen(comp).sum()
         if L * L / comp.sum() >= 10 and L * gsd >= 25:  # elongated and at least 25 m long
-            keep_mask |= comp
+            keep_mask[sl] |= comp
     road = keep_mask
     skel = zhang_suen(road)
     dist = ndi.distance_transform_edt(road)
@@ -288,8 +293,8 @@ def analyse_image(img: np.ndarray, gsd: float) -> dict:
     blobs = []
     for kind, m, min_area in (("water", water_m, 60.0), ("trees", trees_m, 120.0)):
         lab2, comps2 = _components(m, int(min_area / (gsd * gsd)))
-        for cid in comps2:
-            blobs.append({"kind": kind, "mask_id": cid, "lab": lab2})
+        boxes2 = ndi.find_objects(lab2)
+        blobs.extend({"kind": kind, "mask_id": cid, "lab": lab2, "box": boxes2[cid - 1]} for cid in comps2)
 
     roads = []
     for p in paths:
@@ -308,15 +313,16 @@ def analyse_image(img: np.ndarray, gsd: float) -> dict:
             "veg_cover": float((veg > 0.5).mean())}
 
 
-def _blob_polygon(lab: np.ndarray, cid: int, step: int = 4):
+def _blob_polygon(lab: np.ndarray, cid: int, sl: tuple[slice, slice], step: int = 4):
     """Coarse polygon of a labelled component: union of `step`-pixel cells, simplified."""
     from shapely.geometry import box
     from shapely.ops import unary_union
-    m = lab == cid
+    y0, x0 = sl[0].start, sl[1].start
+    m = lab[sl] == cid
     ys, xs = np.nonzero(m[::step, ::step])
     if len(ys) == 0:
         return None
-    poly = unary_union([box(x * step, y * step, (x + 1) * step, (y + 1) * step) for y, x in zip(ys, xs)])
+    poly = unary_union([box(x0 + x * step, y0 + y * step, x0 + (x + 1) * step, y0 + (y + 1) * step) for y, x in zip(ys, xs)])
     return poly.simplify(step * 0.75)
 
 
@@ -378,7 +384,7 @@ def analyse_boundary(boundary: dict, lat: float, lon: float, margin_m: float = 6
         obstacles.append({"kind": "building", "lnglat": ll, "xy": [[round(x, 2), round(y, 2)] for x, y in p.exterior.coords],
                           "area_m2": bd["area_m2"], "inside": bool(p.intersects(field_xy))})
     for bl in res["blobs"]:
-        pp = _blob_polygon(bl["lab"], bl["mask_id"])
+        pp = _blob_polygon(bl["lab"], bl["mask_id"], bl["box"])
         if pp is None or pp.is_empty or pp.geom_type != "Polygon":
             continue
         ll = to_ll(list(pp.exterior.coords))

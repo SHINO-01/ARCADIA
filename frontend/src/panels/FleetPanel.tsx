@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Battery, Play, Power, Radio } from 'lucide-react'
 import { clsx } from 'clsx'
 import { api } from '../lib/api'
@@ -32,12 +32,11 @@ function RobotCard({ r, selected, onSelect, onResume, onPower }: {
 }) {
   const color = ROBOT_COLOR[r.type] ?? '#fff'
   const sColor = STATUS_COLOR[r.status] ?? '#a3b8aa'
-  const hist = useRef<number[]>([])
-  const [, tick] = useState(0)
+  const [hist, setHist] = useState<number[]>([])
   useEffect(() => {
     const id = setInterval(() => {
       const live = liveRegistry.get(r.id)
-      if (live) { hist.current.push(live.speed); if (hist.current.length > 40) hist.current.shift(); tick((t) => t + 1) }
+      if (live) setHist((h) => [...h, live.speed].slice(-40))
     }, 500)
     return () => clearInterval(id)
   }, [r.id])
@@ -69,7 +68,7 @@ function RobotCard({ r, selected, onSelect, onResume, onPower }: {
       </div>
       <div className="mt-1.5 flex items-center justify-between text-[10px] text-fg-3">
         <span className="mono">{live ? `${live.speed.toFixed(2)} m/s` : '— m/s'}{live && live.z > 0.5 ? ` · alt ${live.z.toFixed(1)} m` : ''}</span>
-        <Spark data={hist.current} color={color} w={90} h={18} max={Number((r.spec as { max_speed?: number } | undefined)?.max_speed ?? 6)} />
+        <Spark data={hist} color={color} w={90} h={18} max={Number((r.spec as { max_speed?: number } | undefined)?.max_speed ?? 6)} />
         {(r.latency_ms ?? 0) > 500 && <span className="flex items-center gap-1 text-sun"><Radio size={10} />{Math.round(r.latency_ms!)} ms</span>}
       </div>
       {r.fault && <div className="mono mt-1.5 rounded bg-alert/10 px-2 py-1 text-[10px] text-alert">⚠ {String((r.fault as { fault?: string }).fault)} {JSON.stringify((r.fault as { params?: unknown }).params ?? {})}</div>}

@@ -24,7 +24,6 @@ export const liveRegistry = new Map<string, LiveRobot>()
 /** Live bed-section state pushed by the backend ('section' messages), keyed by section id. */
 export const sectionOverrides = new Map<string, Record<string, unknown>>()
 let cellVersion = 0
-export const getCellVersion = () => cellVersion
 
 function ingestTelemetry(f: TelemetryFrame) {
   if (f.lat == null || f.lng == null) return
@@ -54,6 +53,7 @@ interface LiveState {
   bridge: BridgeStatus | null
   fleet: Record<string, Robot>
   docks: Record<string, DockReading>
+  energyHist: Record<string, number[]>
   incidents: Incident[]
   pendingModal: Incident | null
   missions: Mission[]
@@ -73,7 +73,7 @@ let feedId = 0
 let rateCount = 0
 
 export const useLive = create<LiveState>((set, get) => ({
-  connected: false, bridge: null, fleet: {}, docks: {}, incidents: [], pendingModal: null, missions: [], feed: [],
+  connected: false, bridge: null, fleet: {}, docks: {}, energyHist: {}, incidents: [], pendingModal: null, missions: [], feed: [],
   dispatchPaused: false, chaosFlash: null, cellVersion: 0, telemetryRate: 0,
   setFleet: (robots) => set({ fleet: Object.fromEntries(robots.map((r) => [r.id, { ...get().fleet[r.id], ...r }])) }),
   setIncidents: (incidents) => set({ incidents }),
@@ -111,7 +111,11 @@ export const useLive = create<LiveState>((set, get) => ({
             break
           }
           case 'bridge': set({ bridge: m }); break
-          case 'energy': set({ docks: Object.fromEntries((m.docks as DockReading[]).map((d) => [d.slug, d])) }); break
+          case 'energy': set((s) => {
+            const energyHist = { ...s.energyHist }
+            for (const d of m.docks as DockReading[]) energyHist[d.slug] = [...(energyHist[d.slug] ?? []), d.generated_kw].slice(-60)
+            return { docks: Object.fromEntries((m.docks as DockReading[]).map((d) => [d.slug, d])), energyHist }
+          }); break
           case 'dispatch': set({ dispatchPaused: !!m.paused }); break
           case 'diagnostics': set((s) => {
             const fleet = { ...s.fleet }

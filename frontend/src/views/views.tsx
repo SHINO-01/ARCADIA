@@ -122,8 +122,13 @@ export function AnalyticsView() {
     load(); const id = setInterval(load, 20000); return () => clearInterval(id)
   }, [])
   const byDate = Object.fromEntries(wx.map((d) => [d.date, d]))
-  let cumRain = 0, cumEt = 0, cumIrr = 0
-  const water = daily.map((d) => { const w = byDate[d.date]; cumRain += w?.rain ?? 0; cumEt += w?.et0 ?? 0; cumIrr += (d.irr_delivered_mm ?? 0); return { date: d.date, rain: cumRain, et0: cumEt, irr: cumIrr } })
+  const water = daily.reduce<{ date: string; rain: number; et0: number; irr: number }[]>((acc, d) => {
+    const w = byDate[d.date]
+    const prev = acc[acc.length - 1] ?? { rain: 0, et0: 0, irr: 0 }
+    acc.push({ date: d.date, rain: prev.rain + (w?.rain ?? 0), et0: prev.et0 + (w?.et0 ?? 0), irr: prev.irr + (d.irr_delivered_mm ?? 0) })
+    return acc
+  }, [])
+  const totals = water[water.length - 1] ?? { rain: 0, et0: 0, irr: 0 }
   const last = daily[daily.length - 1]
   return (
     <div className="scroll h-full overflow-auto p-3">
@@ -131,9 +136,9 @@ export function AnalyticsView() {
         <div className="col-span-12 grid grid-cols-2 gap-3 md:grid-cols-5">
           <Kpi label="Harvested" value={yields ? (yields.total_kg / 1000).toFixed(1) : '—'} unit="t" tone="ok" caption={`${yields?.by_crop.reduce((a, y) => a + y.harvests, 0) ?? 0} section harvests`} />
           <Kpi label="Biomass now" value={last ? last.biomass_t_ha.toFixed(1) : '—'} unit="t/ha" />
-          <Kpi label="Rain this season" value={Math.round(cumRain)} unit="mm" tone="info" />
-          <Kpi label="Irrigation applied" value={Math.round(cumIrr)} unit="mm" tone="info" caption="delivered at the root zone" />
-          <Kpi label="Reference ET" value={Math.round(cumEt)} unit="mm" caption="FAO-56 Penman-Monteith" />
+          <Kpi label="Rain this season" value={Math.round(totals.rain)} unit="mm" tone="info" />
+          <Kpi label="Irrigation applied" value={Math.round(totals.irr)} unit="mm" tone="info" caption="delivered at the root zone" />
+          <Kpi label="Reference ET" value={Math.round(totals.et0)} unit="mm" caption="FAO-56 Penman-Monteith" />
         </div>
         <Card className="col-span-12 xl:col-span-6" title="Canopy and biomass" icon={<Sprout size={15} />} right={<Legend items={[{ label: 'LAI', color: 'var(--color-leaf)' }, { label: 'Biomass t/ha', color: 'var(--color-sun)' }]} />}>
           <TimeChart height={200} labels={daily.map((d) => d.date)} fmtX={(s) => fmtDate(s)} yMin={0} rightMin={0}
@@ -162,4 +167,3 @@ export function AnalyticsView() {
   )
 }
 
-export function ChipRow({ items }: { items: string[] }) { return <div className="flex flex-wrap gap-1">{items.map((i) => <Chip key={i}>{i}</Chip>)}</div> }

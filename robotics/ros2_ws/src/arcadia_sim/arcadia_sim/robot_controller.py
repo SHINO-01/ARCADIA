@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import json
 import math
-import os
 import sys
 import time
 from collections import deque
@@ -387,7 +386,7 @@ class ArcadiaRobot(Node):
                 self.b.sim_time += self.dt
                 continue
             # reflex: nearest charging dock by travel distance, along the tracks for ground units
-            self.b.low_battery_rth(lambda: self.dock_route(pos))
+            self.b.low_battery_rth(lambda pos=pos: self.dock_route(pos))
             target = self.b.tick(self.dt, pos, self.irradiance)
             speed = self.fly_uav(target, pos) if self.is_uav else self.drive_ugv(target, pos, yaw)
             # torque-coupled battery drain: mechanical power = sum(|torque_i * omega_i|) at the wheels,

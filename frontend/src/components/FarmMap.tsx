@@ -10,7 +10,7 @@ import * as maplibregl from 'maplibre-gl'
 import maplibreWorkerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?url'
 import type { Map as MLMap, MapMouseEvent, MapGeoJSONFeature, GeoJSONSource, StyleSpecification, RequestTransformFunction } from 'maplibre-gl'
 import 'maplibre-gl/dist/maplibre-gl.css'
-import * as turf from '@turf/turf'
+import { area as tArea, bbox as tBbox, bearing as tBearing, centroid as tCentroid, point as tPoint, polygon as tPolygon } from '@turf/turf'
 import { AltaraRenderer } from '../altara/renderer'
 import { api } from '../lib/api'
 import { useLive, sectionOverrides } from '../store/live'
@@ -56,7 +56,7 @@ export const FarmMap = forwardRef<FarmMapHandle, FarmMapProps>(function FarmMap(
     if (b.pts.length >= 2) feats.push({ type: 'Feature', geometry: { type: 'LineString', coordinates: b.done ? [...b.pts, b.pts[0]] : b.pts }, properties: {} })
     if (b.pts.length >= 3) feats.push({ type: 'Feature', geometry: { type: 'Polygon', coordinates: [[...b.pts, b.pts[0]]] }, properties: { done: b.done } })
     ;(map.getSource('boundary') as GeoJSONSource | undefined)?.setData({ type: 'FeatureCollection', features: feats })
-    const area = b.pts.length >= 3 ? turf.area(turf.polygon([[...b.pts, b.pts[0]]])) : 0
+    const area = b.pts.length >= 3 ? tArea(tPolygon([[...b.pts, b.pts[0]]])) : 0
     setDrawState({ active: b.active, n: b.pts.length, areaM2: area })
     map.getCanvas().style.cursor = b.active ? 'crosshair' : ''
   }
@@ -66,14 +66,14 @@ export const FarmMap = forwardRef<FarmMapHandle, FarmMapProps>(function FarmMap(
     b.done = true; b.active = false
     renderBoundary()
     const feature: GeoJSON.Feature<GeoJSON.Polygon> = { type: 'Feature', properties: {}, geometry: { type: 'Polygon', coordinates: [[...b.pts, b.pts[0]]] } }
-    onDrawn(feature, turf.area(feature))
+    onDrawn(feature, tArea(feature))
   }
   const resetBoundary = () => { boundary.current = { active: false, pts: [], done: false }; renderBoundary() }
 
   useImperativeHandle(ref, () => ({
     startDraw: () => { boundary.current = { active: true, pts: [], done: false }; renderBoundary() },
     clearDraw: () => resetBoundary(),
-    fitFarm: () => { const m = mapRef.current; if (m && farm) { const b = turf.bbox(farm.boundary as GeoJSON.Feature); m.fitBounds([[b[0], b[1]], [b[2], b[3]]], { padding: 60, duration: 700, maxZoom: 17.5 }) } },
+    fitFarm: () => { const m = mapRef.current; if (m && farm) { const b = tBbox(farm.boundary as GeoJSON.Feature); m.fitBounds([[b[0], b[1]], [b[2], b[3]]], { padding: 60, duration: 700, maxZoom: 17.5 }) } },
     flyTo: (lng, lat, zoom = 15.5) => mapRef.current?.flyTo({ center: [lng, lat], zoom, duration: 1600, essential: true }),
   }), [farm])
 
@@ -244,13 +244,24 @@ export const FarmMap = forwardRef<FarmMapHandle, FarmMapProps>(function FarmMap(
       map.__layout = layoutFC
       paintSections(map, layoutFC, layer)
       resetBoundary()
-      const bbox = turf.bbox(farm.boundary as GeoJSON.Feature)
+      const bbox = tBbox(farm.boundary as GeoJSON.Feature)
       map.fitBounds([[bbox[0], bbox[1]], [bbox[2], bbox[3]]], { padding: 60, duration: 900, maxZoom: 17.5 })
     })()
     return () => { cancelled = true }
   }, [farm?.id, farm?.plan, ready]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  useEffect(() => { const map = mapRef.current as (MLMap & { __layout?: GeoJSON.FeatureCollection }) | null; if (map?.__layout && ready) paintSections(map, map.__layout, layer) }, [layer, cellVersion, ready])
+  // repaint the sections at most 4x a second: UAV sightings can arrive several times a second
+  const paintTimer = useRef<number | null>(null)
+  useEffect(() => {
+    const map = mapRef.current as (MLMap & { __layout?: GeoJSON.FeatureCollection }) | null
+    if (!map?.__layout || !ready || paintTimer.current != null) return
+    paintTimer.current = window.setTimeout(() => {
+      paintTimer.current = null
+      const m = mapRef.current as (MLMap & { __layout?: GeoJSON.FeatureCollection }) | null
+      if (m?.__layout) paintSections(m, m.__layout, useUI.getState().layer)
+    }, 250)
+  }, [layer, cellVersion, ready])
+  useEffect(() => () => { if (paintTimer.current != null) window.clearTimeout(paintTimer.current) }, [])
 
   // site-analysis overlays: roads and obstacles found in the imagery, the classification image, soil maps
   const analysisV = useLive((s) => s.cellVersion) // cheap tick so overlays refresh after re-plans
@@ -331,13 +342,13 @@ export const FarmMap = forwardRef<FarmMapHandle, FarmMapProps>(function FarmMap(
   return (
     <div className="relative h-full w-full">
       <div ref={el} className="h-full w-full" />
-      {!imagery && <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-panel/80">
+      {!imagery && <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center bg-panel/80">
         <div className="flex items-center gap-2 rounded-md border border-line bg-bg/90 px-3 py-2 text-xs text-fg-2">
           <span className="h-3 w-3 animate-spin rounded-full border-2 border-leaf border-t-transparent" />Loading satellite imagery…</div></div>}
-      {dispatchArm && <div className="pointer-events-none absolute left-1/2 top-3 -translate-x-1/2 rounded-md border border-leaf-2 bg-bg/90 px-3 py-1.5 text-xs text-leaf anim-slide-up">Click a target for <b>{dispatchArm.robotId}</b> · {dispatchArm.kind} <span className="kbd ml-2">Esc</span></div>}
-      {drawState.active && <div className="pointer-events-none absolute left-1/2 top-3 -translate-x-1/2 rounded-md border border-leaf-2 bg-bg/90 px-3 py-1.5 text-xs text-fg anim-slide-up">
+      {dispatchArm && <div className="pointer-events-none absolute left-1/2 top-3 z-20 -translate-x-1/2 rounded-md border border-leaf-2 bg-bg/90 px-3 py-1.5 text-xs text-leaf anim-slide-up">Click a target for <b>{dispatchArm.robotId}</b> · {dispatchArm.kind} <span className="kbd ml-2">Esc</span></div>}
+      {drawState.active && <div className="pointer-events-none absolute left-1/2 top-3 z-20 -translate-x-1/2 rounded-md border border-leaf-2 bg-bg/90 px-3 py-1.5 text-xs text-fg anim-slide-up">
         <b className="text-leaf">Drawing boundary</b> · {drawState.n} vertices{drawState.areaM2 > 0 ? ` · ${(drawState.areaM2 / 10000).toFixed(2)} ha` : ''} · click the first point / double-click / <span className="kbd">Enter</span> to close · <span className="kbd">⌫</span> undo · <span className="kbd">Esc</span> cancel</div>}
-      {hoverInfo && !dispatchArm && <div className="pointer-events-none absolute bottom-8 left-3 mono rounded bg-bg/80 px-2 py-1 text-[10px] text-fg-2">{hoverInfo}</div>}
+      {hoverInfo && !dispatchArm && !drawState.active && <div className="pointer-events-none absolute left-1/2 top-3 z-20 -translate-x-1/2 rounded-md border border-line bg-bg/90 px-2.5 py-1 font-mono text-[11px] text-fg shadow-lg">{hoverInfo}</div>}
     </div>
   )
 })
@@ -368,8 +379,8 @@ function bedLabels(layout: GeoJSON.FeatureCollection): GeoJSON.FeatureCollection
   for (const [bed, secs] of byBed) {
     const mid = secs[Math.floor(secs.length / 2)]
     const ring = mid.geometry.coordinates[0]
-    const rot = -turf.bearing(turf.point(ring[0]), turf.point(ring[1])) + 90
-    out.push({ type: 'Feature', geometry: turf.centroid(mid).geometry, properties: { label: `${bed.replace('bed-', 'Bed ')}  ${mid.properties?.crop}`, rot } })
+    const rot = -tBearing(tPoint(ring[0]), tPoint(ring[1])) + 90
+    out.push({ type: 'Feature', geometry: tCentroid(mid).geometry, properties: { label: `${bed.replace('bed-', 'Bed ')}  ${mid.properties?.crop}`, rot } })
   }
   return { type: 'FeatureCollection', features: out }
 }
@@ -388,7 +399,7 @@ function paintSections(map: MLMap, layout: GeoJSON.FeatureCollection, layer: str
     else if (layer === 'yield') color = p.yield_est == null ? unseen : ramp(Math.min(1, Number(p.yield_est) / 14), ['#4b3a26', '#c9a640', '#e2b44a', '#fff1b8'])
     else color = STAGE_COLORS[String(p.state)] ?? '#6b5a3e'
     map.setFeatureState({ source: 'layout', id: String(p.id) }, { color })
-    if (p.weeds) weeds.push({ type: 'Feature', geometry: turf.centroid(f as GeoJSON.Feature<GeoJSON.Polygon>).geometry, properties: { id: p.id } })
+    if (p.weeds) weeds.push({ type: 'Feature', geometry: tCentroid(f as GeoJSON.Feature<GeoJSON.Polygon>).geometry, properties: { id: p.id } })
   }
   ;(map.getSource('weeds') as GeoJSONSource | undefined)?.setData({ type: 'FeatureCollection', features: weeds })
 }

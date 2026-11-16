@@ -16,6 +16,8 @@ export default defineConfig({
   build: {
     target: 'es2022',
     sourcemap: false,
+    // MapLibre GL alone is ~900 kB minified; it lives in its own 'map' chunk
+    chunkSizeWarningLimit: 1200,
     rollupOptions: {
       output: {
         manualChunks(id: string) {

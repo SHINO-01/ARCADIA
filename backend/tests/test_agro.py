@@ -9,7 +9,7 @@ from shapely.geometry import LineString, Polygon, box
 from app.agro import climate as cl
 from app.agro.anomalies import AnomalyDetector
 from app.agro.forecast import next_sowing, season
-from app.agro.model import FALLOW, GRAIN_FILL, RIPE, SOWN, STUBBLE, FieldModel
+from app.agro.model import RIPE, SOWN, STUBBLE, FieldModel
 from app.agro.soil import SoilField, d8_twi, saxton_rawls, texture_class
 from app.agro.weather import WeatherGenerator, et0_penman_monteith
 from app.services.layout import LayoutParams, Potential, generate_layout

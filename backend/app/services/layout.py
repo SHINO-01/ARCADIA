@@ -32,10 +32,9 @@ from dataclasses import asdict, dataclass, field
 
 import numpy as np
 from shapely import affinity, contains_xy
-from shapely.geometry import LineString, MultiPolygon, Point, Polygon
+from shapely.geometry import LineString, Point, Polygon
 from shapely.ops import unary_union
 
-from app.services.field import CROP_TYPES
 
 
 @dataclass
@@ -537,4 +536,3 @@ def is_on_crop(sections: list[Section], x: float, y: float) -> bool:
 
 __all__ = ["Layout", "LayoutParams", "Potential", "Section", "Track", "generate_layout", "is_on_crop", "score_zone",
            "best_orientation", "optimise_zones"]
-_ = MultiPolygon

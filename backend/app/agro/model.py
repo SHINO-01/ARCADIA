@@ -34,7 +34,6 @@ STAGE_NAMES = ["fallow", "sown", "vegetative", "flowering", "grain_fill", "ripe"
 STATE_FIELDS = ("stage", "gdd", "das", "lai", "lai_fl", "biomass", "hi_f", "zr", "dr", "pond", "wl_days", "n_soil",
                 "n_up", "weed", "seedbank", "disease", "protect", "ripe_days", "loss", "stubble_days", "ks", "height",
                 "frost_dmg", "irrigated_mm", "rain_mm", "etc_mm", "water_stress_days")
-CROP_KEYS = list(CROPS)
 
 
 class FieldModel:

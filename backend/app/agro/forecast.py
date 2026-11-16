@@ -15,7 +15,7 @@ from datetime import date, timedelta
 import numpy as np
 
 from app.agro.crops import CROPS, sow_months_for
-from app.agro.model import GRAIN_FILL, RIPE, SOWN, FieldModel
+from app.agro.model import RIPE, SOWN, FieldModel
 from app.agro.weather import WeatherGenerator
 
 
@@ -136,4 +136,3 @@ def crop_choice(base: FieldModel, gen_params: dict, today: date, E: int = 16, se
 
 
 __all__ = ["season", "weather_outlook", "crop_choice", "next_sowing"]
-_ = GRAIN_FILL

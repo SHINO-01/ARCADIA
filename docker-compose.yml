@@ -11,6 +11,9 @@ x-backend: &backend
     ARCADIA_REDIS_URL: redis://redis:6379/0
     ARCADIA_ROSBRIDGE_URL: ${ARCADIA_ROSBRIDGE_URL:-ws://host.docker.internal:9090}
     ARCADIA_BRIDGE_MODE: ${ARCADIA_BRIDGE_MODE:-auto}
+    ARCADIA_TILE_CACHE: /cache/geo        # satellite tiles + SoilGrids answers survive rebuilds
+  volumes:
+    - geo_cache:/cache
   extra_hosts:
     - "host.docker.internal:host-gateway"
   depends_on:
@@ -141,6 +144,7 @@ services:
     profiles: ["tunnel-named"]
 
 volumes:
+  geo_cache:
   pg_data:
   redis_data:
   caddy_data:

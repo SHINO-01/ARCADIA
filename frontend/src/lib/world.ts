@@ -92,8 +92,3 @@ export function fmtDate(iso?: string, withYear = false) {
   const d = new Date(iso + 'T00:00:00')
   return d.toLocaleDateString(undefined, { day: 'numeric', month: 'short', ...(withYear ? { year: 'numeric' } : {}) })
 }
-export function fmtHour(h?: number) {
-  if (h == null) return '—'
-  const hh = Math.floor(h); const mm = Math.floor((h - hh) * 60)
-  return `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`
-}

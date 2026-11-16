@@ -8,10 +8,10 @@ import random
 import time
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import delete, select, text, update
+from sqlalchemy import delete, select, update
 
 from app.core.db import sync_session
-from app.core.redis import KEY_CHAOS_CONFIG, get_sync_redis
+from app.core.redis import get_sync_redis
 from app.models import EnergyLog, Farm, Incident, Infrastructure, Mission, Robot, Telemetry
 from app.schemas import Command
 from app.services import chaos as chaos_svc

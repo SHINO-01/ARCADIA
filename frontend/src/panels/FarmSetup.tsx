@@ -2,7 +2,7 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import { clsx } from 'clsx'
 import { Check, ChevronDown, CloudSun, Eye, Layers, Loader2, MapPinned, Pencil, Play, RefreshCw, ScanSearch, Sprout, Trash2, Wand2 } from 'lucide-react'
-import * as turf from '@turf/turf'
+import { length as tLength, lineString as tLineString } from '@turf/turf'
 import { api } from '../lib/api'
 import { fmt } from '../lib/format'
 import { CROP_COLORS, type Farm, type PlanParams } from '../lib/types'
@@ -18,7 +18,7 @@ export function FarmSetup({ drawn, onStartDraw, onClearDraw }: { drawn: Drawn; o
   const { farms, farm, setFarms, setFarm, setMode, setView, notify, overlays, setOverlays } = useUI()
   const [name, setName] = useState('North Field')
   const [busy, setBusy] = useState<string | null>(null)
-  const [analysis, setAnalysis] = useState<Analysis | null>(null)
+  const [fetched, setFetched] = useState<{ farmId: string; data: Analysis } | null>(null)
   const [open, setOpen] = useState<number | null>(null)
   const live = useWorld((s) => (farm ? s.analysis[farm.id] : undefined))
 
@@ -31,10 +31,11 @@ export function FarmSetup({ drawn, onStartDraw, onClearDraw }: { drawn: Drawn; o
     }
   }).catch(() => {})
   useEffect(() => { refreshFarms(true) }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  const analysis = farm && fetched?.farmId === farm.id ? fetched.data : null
   useEffect(() => {
-    if (!farm) { setAnalysis(null); return }
+    if (!farm) return
     let stop = false
-    const poll = () => worldApi.analysis(farm.id).then((a) => { if (!stop) setAnalysis(a) }).catch(() => {})
+    const poll = () => worldApi.analysis(farm.id).then((a) => { if (!stop) setFetched({ farmId: farm.id, data: a }) }).catch(() => {})
     poll()
     const id = setInterval(() => { if (!analysis?.analysed || (analysis.status && !analysis.status.done)) poll() }, 2500)
     return () => { stop = true; clearInterval(id) }
@@ -85,7 +86,7 @@ export function FarmSetup({ drawn, onStartDraw, onClearDraw }: { drawn: Drawn; o
             </div>
             <p className="text-[11px] text-fg-3">Click to place corners · click the first corner, double-click or <span className="kbd">Enter</span> to close · <span className="kbd">⌫</span> undo</p>
             {drawn && <>
-              <Chip tone="ok">{fmt.ha(drawn.areaM2)} · {fmt.m(turf.length(turf.lineString(drawn.feature.geometry.coordinates[0]), { units: 'meters' }))} perimeter</Chip>
+              <Chip tone="ok">{fmt.ha(drawn.areaM2)} · {fmt.m(tLength(tLineString(drawn.feature.geometry.coordinates[0]), { units: 'meters' }))} perimeter</Chip>
               <label className="block"><span className="label">Farm name</span><input className="field mt-1" value={name} onChange={(e) => setName(e.target.value)} /></label>
               <button className="btn btn-primary w-full" disabled={!!busy} onClick={create}>{busy === 'create' ? <Loader2 size={13} className="animate-spin" /> : <Wand2 size={13} />}Create farm and analyse the site</button>
             </>}
@@ -103,7 +104,7 @@ export function FarmSetup({ drawn, onStartDraw, onClearDraw }: { drawn: Drawn; o
 
         <Step n={3} title="Adaptive layout" icon={<Layers size={14} />} step={step} open={isOpen(3)} onToggle={() => setOpen(isOpen(3) ? -1 : 3)}
           summary={farm?.plan?.layout ? `${farm.plan.layout.sections} sections · ${farm.plan.layout.cropped_pct}% cropped` : undefined}>
-          {farm && <LayoutStep farm={farm} busy={busy} run={run} />}
+          {farm && <LayoutStep key={farm.id} farm={farm} busy={busy} run={run} />}
         </Step>
 
         <Step n={4} title="Crop" icon={<Sprout size={14} />} step={step} open={isOpen(4)} onToggle={() => setOpen(isOpen(4) ? -1 : 4)}
@@ -206,8 +207,8 @@ function Fact({ label, value, sub }: { label: string; value: string; sub?: strin
 
 function LayoutStep({ farm, busy, run }: { farm: Farm; busy: string | null; run: (label: string, fn: () => Promise<Farm | void>) => void }) {
   const notify = useUI((s) => s.notify)
-  const [p, setP] = useState<PlanParams & { use_roads?: boolean }>({ ...DEFAULT_PARAMS, use_roads: true })
-  useEffect(() => { const lp = farm.plan?.layout?.params; if (lp) setP((x) => ({ ...x, ...lp, k_docks: null, k_storage: null })) }, [farm.id]) // eslint-disable-line react-hooks/exhaustive-deps
+  // the parent keys this component by farm id, so the saved parameters seed the form once per farm
+  const [p, setP] = useState<PlanParams & { use_roads?: boolean }>(() => ({ ...DEFAULT_PARAMS, use_roads: true, ...(farm.plan?.layout?.params ?? {}), k_docks: null, k_storage: null }))
   const L = farm.plan?.layout as (NonNullable<Farm['plan']>['layout'] & { zones?: { id: number; angle_deg: number; area_m2: number; sections: number; bed_runs?: number }[]; roads_used?: number; obstacles_excluded?: number; baseline?: { score: number; optimised_score: number; bed_runs: number; angle_deg: number } }) | undefined
   const gain = L?.baseline ? (100 * (L.baseline.optimised_score - L.baseline.score)) / Math.max(1, Math.abs(L.baseline.score)) : null
   const runs = L?.zones?.reduce((a, z) => a + (z.bed_runs ?? 0), 0)
@@ -255,12 +256,15 @@ function Slider({ label, unit, v, min, max, step, on }: { label: string; unit: s
 function CropStep({ farm, run }: { farm: Farm; run: (label: string, fn: () => Promise<Farm | void>) => void }) {
   const notify = useUI((s) => s.notify)
   const [opts, setOpts] = useState<CropOption[] | null>(null)
-  const [loading, setLoading] = useState(false)
+  const [refreshing, setRefreshing] = useState(false)
   const current = (farm.crop_plan as { crop?: string; rotation_crop?: string | null } | null) ?? null
   const [pick, setPick] = useState<string | null>(current?.crop ?? null)
   const [rotation, setRotation] = useState<string>(current?.rotation_crop ?? '')
-  const load = (refresh = false) => { setLoading(true); worldApi.crops(farm.id, refresh).then((o) => { setOpts(o); if (!pick) setPick(o.find((x) => x.recommended)?.crop ?? o[0]?.crop ?? null) }).catch((e) => notify(e.message, 'err')).finally(() => setLoading(false)) }
+  const load = (refresh = false) => worldApi.crops(farm.id, refresh).then((o) => { setOpts(o); setPick((cur) => cur ?? o.find((x) => x.recommended)?.crop ?? o[0]?.crop ?? null) })
+    .catch((e) => notify(e.message, 'err'))
+  const reload = () => { setRefreshing(true); load(true).finally(() => setRefreshing(false)) }
   useEffect(() => { load() }, [farm.id, farm.plan]) // eslint-disable-line react-hooks/exhaustive-deps
+  const loading = refreshing || opts === null
   const maxMargin = Math.max(...(opts ?? []).map((o) => o.margin_usd_ha.p90), 1)
   return (
     <div className="space-y-2.5 text-xs">
@@ -278,7 +282,7 @@ function CropStep({ farm, run }: { farm: Farm; run: (label: string, fn: () => Pr
         <select className="field mt-1" value={rotation} onChange={(e) => setRotation(e.target.value)}><option value="">None: whole field one crop</option>{opts.filter((o) => o.crop !== pick).map((o) => <option key={o.crop} value={o.crop}>{o.name} on half the beds</option>)}</select></label>}
       <div className="flex gap-1.5">
         <button className="btn btn-primary flex-1" disabled={!pick} onClick={() => run('crop', async () => { await worldApi.setCrop(farm.id, { crop: pick!, rotation_crop: rotation || null }); notify(`Crop set: ${pick}${rotation ? ` + ${rotation}` : ''}`, 'ok'); return api.farm(farm.id) })}><Sprout size={13} />Use {opts?.find((o) => o.crop === pick)?.name ?? 'crop'}</button>
-        <button className="btn" title="Re-simulate" aria-label="Re-simulate crop options" onClick={() => load(true)}><RefreshCw size={13} /></button>
+        <button className="btn" title="Re-simulate" aria-label="Re-simulate crop options" disabled={refreshing} onClick={reload}><RefreshCw size={13} className={refreshing ? 'animate-spin' : ''} /></button>
       </div>
     </div>
   )
