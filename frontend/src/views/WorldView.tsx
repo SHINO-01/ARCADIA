@@ -231,15 +231,13 @@ function setMode(mode: WorldMode, notify: (m: string, tone?: 'ok' | 'err') => vo
 
 const hhmm = (h: number) => `${String(Math.floor(h)).padStart(2, '0')}:${String(Math.floor((h % 1) * 60)).padStart(2, '0')}`
 
-/** World clock for the status bar: the real-time twin (default, 1:1 with the wall clock) or the simulation sandbox and its controls. */
+/** World clock for the status bar: Real-time / Simulation switch, the farm date and time, air temperature. */
 export function WorldClock() {
   const clock = useWorld((s) => s.clock)
   const weather = useWorld((s) => s.weather)
   const notify = useUI((s) => s.notify)
   if (!clock) return null
   const sim = clock.mode === 'simulation'
-  const speeds = [{ value: '120', label: '1d/2m' }, { value: '30', label: '1d/30s' }, { value: '10', label: '1d/10s' }, { value: '4', label: '1d/4s' }]
-  const cur = speeds.find((s) => Number(s.value) === Math.round(clock.day_seconds))?.value ?? '30'
   const tz = `UTC${clock.utc_offset_h >= 0 ? '+' : ''}${clock.utc_offset_h.toFixed(1)}`
   return (
     <div className="flex items-center gap-2">
@@ -247,20 +245,41 @@ export function WorldClock() {
         { value: 'realtime', label: <span className="flex items-center gap-1"><span className={clsx('h-1.5 w-1.5 rounded-full', sim ? 'bg-fg-3' : 'animate-pulse bg-leaf')} />Real-time</span>, title: 'The live twin: farm time runs 1:1 with the wall clock' },
         { value: 'simulation', label: <span className="flex items-center gap-1"><FlaskConical size={10} />Simulation</span>, title: 'What-if sandbox forked from the real-time state: fast-forward, pause, scenarios' },
       ]} />
-      <span className={clsx('num whitespace-nowrap rounded-md px-2 py-0.5 text-[11px]', sim ? 'bg-sun/15 text-sun' : 'bg-panel-2 text-fg')}
+      <span className={clsx('num w-[148px] whitespace-nowrap rounded-md px-2 py-0.5 text-center text-[11px]', sim ? 'bg-sun/15 text-sun' : 'bg-panel-2 text-fg')}
         title={sim ? 'Sandbox date and time' : `Farm date and local solar time (${tz}), running 1:1 with the wall clock`}>
         {fmtDate(clock.date, true)} · {hhmm(clock.hour)}</span>
-      {!sim && clock.catching_up && <span className="chip bg-sky/15 text-sky" title="The twin was offline and is stepping through the days it missed">catching up</span>}
-      {weather && <span className="num hidden text-[11px] text-fg-2 lg:inline" title="Air temperature">{weather.t.toFixed(0)}°C{weather.rain_today > 0.5 ? ` · ${weather.rain_today} mm` : ''}</span>}
-      {sim && <>
-        <button className="btn btn-ghost px-1.5 py-0.5" aria-label={clock.paused ? 'Resume simulation' : 'Pause simulation'} title={clock.paused ? 'Resume' : 'Pause'}
-          onClick={() => worldApi.clock({ paused: !clock.paused }).catch((e) => notify(e.message, 'err'))}>{clock.paused ? <Play size={12} /> : <Pause size={12} />}</button>
-        <span className="hidden items-center gap-1 text-fg-3 xl:flex"><FastForward size={11} /></span>
-        <Segmented size="xs" value={cur} options={speeds} onChange={(v) => worldApi.clock({ day_seconds: Number(v) }).catch((e) => notify(e.message, 'err'))} />
-        <button className="btn btn-ghost px-1.5 py-0.5" aria-label="Restart the sandbox from the real-time state" title="Restart the sandbox from the current real-time state"
-          onClick={() => { if (window.confirm('Discard this simulation run and start a new one from the current real-time state?')) worldApi.resetSimulation().then(() => notify('Sandbox restarted from the real-time twin', 'ok')).catch((e) => notify(e.message, 'err')) }}>
-          <RotateCcw size={12} /></button>
-      </>}
+      {clock.catching_up && <span className="chip bg-sky/15 text-sky" title="The twin was offline and is stepping through the days it missed">catching up</span>}
+      {weather && <span className="num hidden w-[44px] text-[11px] text-fg-2 lg:inline" title={`Air temperature${weather.rain_today > 0.5 ? ` · ${weather.rain_today} mm rain today` : ''}`}>{weather.t.toFixed(0)}°C</span>}
+    </div>
+  )
+}
+
+/** Second bar shown only in simulation mode: the sandbox's own controls, kept out of the status bar. */
+export function SandboxBar() {
+  const clock = useWorld((s) => s.clock)
+  const notify = useUI((s) => s.notify)
+  if (clock?.mode !== 'simulation') return null
+  const speeds = [{ value: '120', label: '1 d / 2 min' }, { value: '30', label: '1 d / 30 s' }, { value: '10', label: '1 d / 10 s' }, { value: '4', label: '1 d / 4 s' }]
+  const cur = speeds.find((s) => Number(s.value) === Math.round(clock.day_seconds))?.value ?? '30'
+  const fail = (e: Error) => notify(e.message, 'err')
+  return (
+    <div role="region" aria-label="Simulation sandbox controls"
+      className="flex h-9 shrink-0 items-center gap-3 border-b border-sun/40 bg-sun/[0.06] px-4 text-[11px] text-fg-2">
+      <FlaskConical size={13} className="shrink-0 text-sun" />
+      <span className="font-semibold text-sun">Simulation sandbox</span>
+      <span className="hidden truncate text-fg-3 lg:inline">a copy of the live farm · nothing here changes the real-time twin</span>
+      <div className="ml-auto flex shrink-0 items-center gap-2">
+        <button className="btn btn-ghost px-2 py-0.5" aria-label={clock.paused ? 'Resume simulation' : 'Pause simulation'}
+          onClick={() => worldApi.clock({ paused: !clock.paused }).catch(fail)}>
+          {clock.paused ? <><Play size={12} />Resume</> : <><Pause size={12} />Pause</>}</button>
+        <span className="flex items-center gap-1.5 text-fg-3"><FastForward size={12} />Speed</span>
+        <Segmented size="xs" value={cur} options={speeds} onChange={(v) => worldApi.clock({ day_seconds: Number(v) }).catch(fail)} />
+        <span className="mx-1 h-4 w-px bg-line" />
+        <button className="btn btn-ghost px-2 py-0.5" title="Discard this run and start again from the current real-time state"
+          onClick={() => { if (window.confirm('Discard this simulation run and start a new one from the current real-time state?')) worldApi.resetSimulation().then(() => notify('Sandbox restarted from the real-time twin', 'ok')).catch(fail) }}>
+          <RotateCcw size={12} />Restart from live</button>
+        <button className="btn px-2 py-0.5" onClick={() => setMode('realtime', notify)}><span className="h-1.5 w-1.5 rounded-full bg-leaf" />Back to real-time</button>
+      </div>
     </div>
   )
 }

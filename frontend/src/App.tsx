@@ -6,7 +6,7 @@ import { Legend } from './components/Legend'
 import { NavRail, StatusBar } from './components/Shell'
 import { VIEW_KEYS } from './lib/nav'
 import { Onboarding } from './components/Onboarding'
-import { WorldView } from './views/WorldView'
+import { SandboxBar, WorldView } from './views/WorldView'
 import { IncidentModal } from './panels/IncidentsPanel'
 import { AlertsView, AnalyticsView, OpsView, PlanView, TwinView } from './views/views'
 import { api } from './lib/api'
@@ -65,6 +65,7 @@ export default function App() {
       <NavRail />
       <div className="flex min-w-0 flex-1 flex-col">
         <StatusBar fps={fps} />
+        <SandboxBar />
         <main ref={mainRef} className="relative min-h-0 flex-1 bg-bg">
           {view === 'plan' && <PlanView drawn={drawn} onStartDraw={() => mapRef.current?.startDraw()} onClearDraw={() => { mapRef.current?.clearDraw(); setDrawn(null) }} />}
           {view === 'world' && <WorldView />}
