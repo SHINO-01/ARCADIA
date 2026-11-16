@@ -7,7 +7,7 @@ export WEBOTS_HOME ?= $(HOME)/opt/webots
 export CYCLONEDDS_URI ?= file://$(CURDIR)/robotics/config/cyclonedds.xml
 
 .PHONY: help up down logs ps web-build backend-dev backend-test frontend-dev frontend-build \
-        robotics-build sim sim-headless seed-demo clean
+        robotics-build sim sim-headless sim-agent-install sim-agent-uninstall sim-agent-logs seed-demo clean
 
 help:
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}'
@@ -49,6 +49,15 @@ sim: ## Launch Webots + fleet controllers + rosbridge + diagnostics (native)
 sim-headless: ## Launch the ROS 2 fleet without the Webots GUI (minimised, no rendering)
 	source /opt/ros/$(ROS_DISTRO)/setup.bash && source $(WS)/install/setup.bash && \
 	ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST ros2 launch arcadia_bringup arcadia.launch.py gui:=false api_url:=$(API_URL)
+
+sim-agent-install: ## Auto-start/stop the native simulation with `docker compose up -d` / `down` (systemd user service)
+	scripts/sim_agent.sh install
+
+sim-agent-uninstall: ## Remove the sim agent (start the simulation by hand with `make sim` again)
+	scripts/sim_agent.sh uninstall
+
+sim-agent-logs: ## Follow the sim agent and simulation log
+	scripts/sim_agent.sh logs
 
 seed-demo: ## Create, plan and activate a demo farm through the API
 	python3 scripts/seed_demo.py

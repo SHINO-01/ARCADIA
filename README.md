@@ -46,9 +46,13 @@ make robotics-build && make sim                           # Webots + fleet + ros
 make seed-demo                                            # or set up a farm in the dashboard
 ```
 
-Day to day, `docker compose up -d` starts the whole web stack (dashboard included, at
-http://localhost:8080) and `docker compose down` stops it; `make up` does the same but rebuilds the
-images first, which is needed after pulling new code.
+Day to day, `docker compose up -d` starts the whole project and `docker compose down` stops it;
+`make up` does the same but rebuilds the images first, which is needed after pulling new code.
+The web stack (dashboard at http://localhost:8080) runs in Docker. Webots and ROS 2 stay native
+for performance; the **sim agent** (`make sim-agent-install`, a systemd user service that
+`setup.sh --full` installs) starts `make sim` as soon as the stack is healthy and stops it once
+the stack has been down for 45 s, so the one Docker command drives the simulation too. Set
+`ARCADIA_SIM_GUI=false` in `.env` for a minimised Webots; `make sim-agent-logs` follows it.
 
 Without `make sim` the backend's **headless digital twin** drives the whole platform (same wire
 protocol), and the bridge hot-swaps to ROS 2 as soon as rosbridge on :9090 becomes reachable.

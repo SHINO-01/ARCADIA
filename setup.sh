@@ -153,6 +153,10 @@ if [[ $FULL -eq 1 ]]; then
   step "Building the ROS 2 workspace"
   export WEBOTS_HOME="${WEBOTS_HOME:-$HOME/opt/webots}"
   make robotics-build
+  if have systemctl && systemctl --user show-environment >/dev/null 2>&1; then
+    step "Installing the sim agent (the simulation follows docker compose up/down)"
+    scripts/sim_agent.sh install || warn "sim agent not installed; start the simulation with make sim"
+  fi
 fi
 
 if [[ $DEMO -eq 1 ]]; then
@@ -166,6 +170,6 @@ echo "    dashboard   ${B}${URL}${N}"
 [[ -n "$PUBLIC" ]] && echo "    public      ${B}${PUBLIC}${N}   (Cloudflare quick tunnel, changes on restart)"
 [[ -n "$TOKEN" ]] && echo "    public      your Cloudflare tunnel hostname"
 echo "    API docs    ${URL}/api/docs"
-if [[ $FULL -eq 1 ]]; then echo "    simulator   cd $ROOT && make sim      (Webots + ROS 2; the dashboard switches to it)"
+if [[ $FULL -eq 1 ]]; then echo "    simulator   starts with the stack (sim agent); logs: make sim-agent-logs"
 elif [[ $CLOUD -eq 0 ]]; then echo "    simulator   optional: $0 --full, then make sim"; fi
 echo "    stop        cd $ROOT && ${DOCKER[*]} compose down"
