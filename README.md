@@ -14,12 +14,23 @@ ARCADIA/
 ├── robotics/       Native ROS 2 workspace: arcadia_msgs, arcadia_sim (Webots controllers), arcadia_supervisor (C++), arcadia_bringup
 ├── infra/caddy/    Reverse proxy (SPA, /api, /ws, /rosbridge, /webots-stream) with internal TLS on :8443
 ├── docker-compose.yml   caddy · api · worker · beat · web · postgres (TimescaleDB) · redis
-└── scripts/        dev_backend.sh (native backend), seed_demo.py (demo farm)
+└── scripts/        dev_backend.sh (native backend), seed_demo.py (demo farm), sim_agent.sh (optional: sim follows the stack)
 ```
 
-## Quick start
+## Requirements
 
-One line (Docker is installed if missing; free ports are picked; a random database password is written to `.env`):
+| Part | Needs |
+|---|---|
+| Web stack (dashboard, API, Celery, TimescaleDB, Redis, Caddy) | Docker Engine with Compose v2, ~2 GB RAM, any OS/architecture (`setup.sh` installs Docker on Linux if it is missing) |
+| Simulation (Webots R2025a + ROS 2 Lyrical), optional | Ubuntu x86-64 desktop with a display, ~4 GB RAM; installed natively, never in Docker |
+
+Without the simulation, the backend's **headless digital twin** runs the farm, the robots and the world
+model on its own (same wire protocol), so everything except the 3D view works with Docker alone.
+
+## Setup
+
+**One line** (clones the repository, writes `.env` with a random database password, picks free ports,
+builds and starts the web stack):
 
 ```bash
 git clone https://github.com/SHINO-01/ARCADIA.git && ARCADIA/setup.sh
@@ -27,42 +38,107 @@ git clone https://github.com/SHINO-01/ARCADIA.git && ARCADIA/setup.sh
 
 | Option | Effect |
 |---|---|
-| `--full` | also install ROS 2 Lyrical and Webots R2025a natively and build the workspace (Ubuntu x86-64), then `make sim` |
-| `--tunnel` | public https URL through a free Cloudflare quick tunnel (`--tunnel-token TOKEN` for your own domain) |
-| `--cloud` | server mode: headless digital twin, databases on localhost only |
+| `--full` | also install ROS 2 Lyrical (apt, asks for sudo) and Webots R2025a (`~/opt/webots`), build the ROS 2 workspace and install the sim agent |
 | `--demo` | create, analyse, lay out, plant and activate a demo farm |
-| `--port N`, `--project NAME` | dashboard port; compose project name for a second install on one machine |
+| `--tunnel` | public https URL through a free Cloudflare quick tunnel (`--tunnel-token TOKEN` for your own domain) |
+| `--cloud` | server mode: headless digital twin only, databases on localhost only |
+| `--port N` | dashboard port (default 8080, or the next free one) |
+| `--project NAME` | Docker Compose project name, for a second install on the same machine |
+| `-y` | do not ask before installing Docker |
 
-Once the repository is public: `curl -fsSL https://raw.githubusercontent.com/SHINO-01/ARCADIA/main/setup.sh | bash -s -- --tunnel`.
+Once the repository is public: `curl -fsSL https://raw.githubusercontent.com/SHINO-01/ARCADIA/main/setup.sh | bash -s -- --full`.
 Free hosting options are compared in [docs/HOSTING.md](docs/HOSTING.md).
 
-Manual steps, if you prefer:
+**Step by step**, if you prefer:
 
 ```bash
-sudo bash robotics/scripts/install_ros2_apt.sh            # ROS 2 Lyrical (once)
-cp .env.example .env && make up                           # web stack: http://localhost:8080
-bash robotics/scripts/install_webots_tarball.sh           # Webots R2025a -> ~/opt/webots
-make robotics-build && make sim                           # Webots + fleet + rosbridge :9090
-make seed-demo                                            # or set up a farm in the dashboard
+cp .env.example .env                                  # settings (ports, passwords, sim options)
+make up                                               # build + start the web stack
+sudo bash robotics/scripts/install_ros2_apt.sh        # ROS 2 Lyrical (once)
+bash robotics/scripts/install_webots_tarball.sh       # Webots R2025a -> ~/opt/webots (once)
+make robotics-build                                   # build the ROS 2 workspace (again after robotics changes)
 ```
 
-Day to day, `docker compose up -d` starts the whole project and `docker compose down` stops it;
-`make up` does the same but rebuilds the images first, which is needed after pulling new code.
-The web stack (dashboard at http://localhost:8080) runs in Docker. Webots and ROS 2 stay native
-for performance; the **sim agent** (`make sim-agent-install`, a systemd user service that
-`setup.sh --full` installs) starts `make sim` as soon as the stack is healthy and stops it once
-the stack has been down for 45 s, so the one Docker command drives the simulation too. Set
-`ARCADIA_SIM_GUI=false` in `.env` for a minimised Webots; `make sim-agent-logs` follows it.
+After pulling new code, run `make up` (rebuilds the images; database migrations run on start) and,
+if anything under `robotics/` changed, `make robotics-build`.
 
-Without `make sim` the backend's **headless digital twin** drives the whole platform (same wire
-protocol), and the bridge hot-swaps to ROS 2 as soon as rosbridge on :9090 becomes reachable.
+## Running
 
-### Native backend for development
+```bash
+docker compose up -d        # web stack: dashboard, API, workers, databases, proxy
+make sim                    # optional, second terminal: Webots + robot fleet + rosbridge (Ctrl+C stops it)
+```
+
+| What | Where |
+|---|---|
+| Dashboard | http://localhost:8080 (https on :8443 with Caddy's internal certificate) |
+| API docs | http://localhost:8080/api/docs |
+| Logs | `make logs` (API, workers, proxy), `docker compose ps` for container health |
+| Webots stream, rosbridge | :1234 and :9090 on the host, proxied by Caddy as `/webots-stream` and `/rosbridge` |
+
+The dashboard's status bar shows which simulator is driving the farm: **headless twin** or
+**ROS 2 · Webots**. The backend switches to Webots by itself when `make sim` comes up and back to the
+headless twin when it stops. `make sim-headless` runs Webots minimised without rendering.
+
+**Optional sim agent:** `make sim-agent-install` installs a systemd user service that starts `make sim`
+when `docker compose up -d` brings the stack up and stops it once the stack has been down for 45 s,
+so the single Docker command runs the whole project. `ARCADIA_SIM_GUI=false` in `.env` keeps Webots
+minimised; `make sim-agent-logs` follows it.
+
+**Native backend for development** (instead of the API/worker containers; do not run both):
+
 ```bash
 docker compose up -d postgres redis
 scripts/dev_backend.sh start      # API :8000 + Celery worker + beat; logs in .run/
 cd frontend && npm run dev        # Vite :5173 proxies /api and /ws to :8000
 ```
+
+## Using it
+
+1. **Set up a farm.** The first visit opens a welcome dialog: search for the place, then draw the field
+   boundary on the satellite map. The **Farm** view walks through site analysis (roads and obstacles from
+   imagery, 10 years of ERA5 climate, SoilGrids soil), the adaptive bed layout, the crop choice (a
+   Monte Carlo season for each crop) and activation. `make seed-demo` does all of this for a demo farm.
+2. **Watch the farm.** The **World** view shows weather, soil water, crop stages, the yield forecast,
+   field-operation campaigns and statistical anomalies. **Operations** is the live map with the fleet;
+   **3D Twin** is the Webots view; **Alerts** and **Analytics** hold the history.
+3. **Real-time or simulation.** The switch in the status bar picks the timeline:
+   * **Real-time** (default, always on start-up): farm time runs 1:1 with the wall clock, in the farm's
+     local solar time. Daily records arrive once a day; after downtime the twin catches up.
+   * **Simulation**: a sandbox copied from the live farm, with its own history. The amber bar under the
+     status bar has pause, speed (1 day per 2 min to 1 day per 4 s), **Restart from live** and
+     **Back to real-time**. What-if scenarios (drought, heatwave, frost, storm, pests, irrigation failure)
+     run only here. Nothing done in the sandbox changes the real-time farm.
+4. **Command robots.** Robots work the campaign queues on their own. To take over, select a unit on the
+   Operations map and use the command bar (keys and rules under *RTS unit control* below). Faults raise an
+   incident; a tow is dispatched only after you confirm it in the maintenance dialog.
+
+## Stopping and clean-up
+
+| To | Run |
+|---|---|
+| Stop the simulation | `Ctrl+C` in the `make sim` terminal |
+| Stop the web stack (data kept) | `docker compose down` (or `make down`) |
+| ... also a tunnel started with `--tunnel` | `docker compose --profile tunnel --profile tunnel-named down` |
+| Stop the native dev backend | `scripts/dev_backend.sh stop` (and `Ctrl+C` the Vite dev server) |
+| Pause the sim agent until next login / turn it off / remove it | `systemctl --user stop arcadia-sim` / `systemctl --user disable --now arcadia-sim` / `make sim-agent-uninstall` |
+| Check nothing is left running | `docker compose ps` (empty) and `pgrep -x webots-bin` (no output) |
+
+`docker compose down` keeps the database, Redis, map-tile cache and certificates in Docker volumes, so
+the farm, its history and the simulation sandbox are there on the next `docker compose up -d`.
+
+**Removing everything** (this deletes all farms and history and cannot be undone):
+
+```bash
+make sim-agent-uninstall                            # if it was installed
+docker compose down -v --rmi local                  # containers, volumes (all data), built images
+docker rmi arcadia-backend:latest arcadia-web:latest 2>/dev/null
+make clean                                          # ROS 2 build output and the frontend build
+rm -rf ~/opt/webots                                 # Webots, if installed by the script
+rm -f .env                                          # local settings and the database password
+```
+
+ROS 2 was installed with apt (`ros-lyrical-*` packages) and is removed the same way if no other project uses it.
 
 ## Mission-control UI
 
