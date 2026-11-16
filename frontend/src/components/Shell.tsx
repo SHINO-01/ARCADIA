@@ -1,4 +1,4 @@
-/** Mission-control shell: left navigation rail + status bar with the simulation clock. */
+/** Mission-control shell: left navigation rail + status bar with the world clock (real-time twin or simulation sandbox). */
 import { useEffect, useState } from 'react'
 import { Activity, Database, Gauge, Radio, Satellite } from 'lucide-react'
 import { clsx } from 'clsx'
@@ -58,13 +58,15 @@ export function StatusBar({ fps }: { fps: number }) {
   const fleet = useLive((s) => s.fleet)
   const { farm, view } = useUI()
   const active = Object.values(fleet).filter((r) => r.active).length
+  const sandbox = useWorld((s) => s.clock?.mode === 'simulation')
   const bridgeTone = bridge?.ros_connected ? 'var(--color-leaf)' : bridge?.mode === 'headless' ? 'var(--color-sun)' : 'var(--color-alert)'
   return (
-    <header className="flex h-12 items-center gap-4 border-b border-line bg-panel px-4 text-[11px] text-fg-2">
+    <header className={clsx('flex h-12 items-center gap-4 border-b bg-panel px-4 text-[11px] text-fg-2', sandbox ? 'border-sun/60 shadow-[inset_0_-1px_0_var(--color-sun)]' : 'border-line')}>
       <div className="flex min-w-0 items-center gap-2">
         <h1 className="whitespace-nowrap text-sm font-semibold text-fg">{TITLES[view]}</h1>
         {farm && <span className="hidden truncate text-fg-3 lg:inline">· {farm.name}</span>}
         {farm && <span className={clsx('chip', farm.status === 'active' ? 'bg-leaf-2/20 text-leaf' : 'bg-line text-fg-2')}>{farm.status}</span>}
+        {sandbox && <span className="chip bg-sun/15 text-sun" title="You are looking at the simulation sandbox, not the real-time farm">sandbox</span>}
       </div>
       <div className="ml-auto flex shrink-0 items-center gap-3 whitespace-nowrap xl:gap-4">
         <WorldClock />

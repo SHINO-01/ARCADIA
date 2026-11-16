@@ -16,6 +16,7 @@ from app.core.redis import CH_DASHBOARD, CH_TELEMETRY, KEY_ENERGY, get_redis
 from app.models import EnergyLog, Telemetry, YieldRecord
 from app.services import chaos as chaos_svc
 from app.services import fleet
+from app.services.world_engine import world
 
 log = logging.getLogger("arcadia.ws")
 router = APIRouter(tags=["telemetry"])
@@ -35,11 +36,10 @@ async def telemetry_history(robot_id: str, minutes: int = Query(10, le=1440), li
 @router.get("/analytics/yields")
 async def yields(s: AsyncSession = Depends(get_session)):
     farm_id = await fleet.get_active_farm_id()
-    q = select(YieldRecord.crop_type, func.sum(YieldRecord.kg), func.count()).group_by(YieldRecord.crop_type)
-    if farm_id:
-        q = q.where(YieldRecord.farm_id == farm_id)
+    mine = [YieldRecord.mode == world.mode] + ([YieldRecord.farm_id == farm_id] if farm_id else [])  # current timeline only
+    q = select(YieldRecord.crop_type, func.sum(YieldRecord.kg), func.count()).where(*mine).group_by(YieldRecord.crop_type)
     rows = (await s.execute(q)).all()
-    recent = (await s.execute(select(YieldRecord).order_by(YieldRecord.harvested_at.desc()).limit(25))).scalars().all()
+    recent = (await s.execute(select(YieldRecord).where(*mine).order_by(YieldRecord.harvested_at.desc()).limit(25))).scalars().all()
     return {"by_crop": [{"crop": c, "kg": round(float(kg), 2), "harvests": n} for c, kg, n in rows],
             "total_kg": round(sum(float(kg) for _, kg, _ in rows), 2),
             "recent": [{"section": r.section_id, "crop": r.crop_type, "kg": r.kg, "robot": r.robot_id, "t": r.harvested_at.isoformat()}

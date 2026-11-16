@@ -79,10 +79,14 @@ class FieldSection(Base):
 
 
 class WorldState(Base):
-    """Agronomic world-model snapshot per farm (resumes the simulation after a restart)."""
+    """Agronomic world-model snapshot per farm and timeline (resumes the world after a restart).
+
+    `mode` separates the real-time twin ("realtime", clock = wall clock) from the what-if
+    sandbox ("simulation", accelerated clock, forked from the real-time state)."""
     __tablename__ = "world_states"
 
     farm_id: Mapped[str] = mapped_column(ForeignKey("farms.id", ondelete="CASCADE"), primary_key=True)
+    mode: Mapped[str] = mapped_column(String(10), primary_key=True, default="realtime")
     sim_date: Mapped[str] = mapped_column(String(10))          # ISO date
     sim_day_frac: Mapped[float] = mapped_column(Float, default=0.25)
     day_seconds: Mapped[float] = mapped_column(Float, default=30.0)
@@ -97,6 +101,7 @@ class WeatherDaily(Base):
     __tablename__ = "weather_daily"
 
     farm_id: Mapped[str] = mapped_column(ForeignKey("farms.id", ondelete="CASCADE"), primary_key=True)
+    mode: Mapped[str] = mapped_column(String(10), primary_key=True, default="realtime")
     date: Mapped[str] = mapped_column(String(10), primary_key=True)
     data: Mapped[dict] = mapped_column(JSONType)
 
@@ -105,6 +110,7 @@ class FarmDaily(Base):
     __tablename__ = "farm_daily"
 
     farm_id: Mapped[str] = mapped_column(ForeignKey("farms.id", ondelete="CASCADE"), primary_key=True)
+    mode: Mapped[str] = mapped_column(String(10), primary_key=True, default="realtime")
     date: Mapped[str] = mapped_column(String(10), primary_key=True)
     data: Mapped[dict] = mapped_column(JSONType)
 
@@ -114,6 +120,7 @@ class Anomaly(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
     farm_id: Mapped[str] = mapped_column(ForeignKey("farms.id", ondelete="CASCADE"), index=True)
+    mode: Mapped[str] = mapped_column(String(10), default="realtime")
     key: Mapped[str] = mapped_column(String(32))
     kind: Mapped[str] = mapped_column(String(32))
     severity: Mapped[str] = mapped_column(String(10))
@@ -232,6 +239,7 @@ class YieldRecord(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     farm_id: Mapped[str] = mapped_column(String(36), index=True)
+    mode: Mapped[str] = mapped_column(String(10), default="realtime")
     section_id: Mapped[str | None] = mapped_column(String(16), index=True, nullable=True)
     crop_type: Mapped[str] = mapped_column(String(24))
     kg: Mapped[float] = mapped_column(Float)

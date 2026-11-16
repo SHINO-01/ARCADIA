@@ -1,7 +1,15 @@
 """Runtime of the agronomic world model for the live farm.
 
 One engine per API process (it lives next to the simulation bridge). It owns the field's ground
-truth and advances it on a compressed clock (`day_seconds` real seconds per simulated day):
+truth on one of two separate timelines:
+
+  realtime      the default: the live twin. Its clock is the wall clock at the farm (local solar
+                time), one second per second; after downtime it catches up on the missed days.
+  simulation    the what-if sandbox: forked from the real-time state, accelerated (`day_seconds`
+                real seconds per simulated day), pausable, with weather and pest scenarios. It keeps
+                its own snapshot and records, so nothing done there touches the real-time history.
+
+On either timeline the world advances the same way:
 
   start of day  weather generated for the day (stochastic, climate-calibrated, scenarios applied)
   during day    hourly temperature/irradiance for display, sun position and sky for Webots,
@@ -26,7 +34,7 @@ from datetime import date, datetime, timedelta, timezone
 import numpy as np
 from shapely.geometry import Polygon
 from shapely.strtree import STRtree
-from sqlalchemy import select
+from sqlalchemy import delete, select, text, update
 
 from app.agro import forecast as fc
 from app.agro.anomalies import AnomalyDetector
@@ -52,6 +60,38 @@ KEY_NOW = "arcadia:world:now"
 MODEL_SCENARIOS = {"irrigation_failure": "Irrigation failure: pump down, no water delivered",
                    "pest_outbreak": "Pest / disease outbreak seeded in the canopy"}
 ALL_SCENARIOS = {**SCENARIOS, **MODEL_SCENARIOS}
+
+REALTIME, SIMULATION = "realtime", "simulation"
+MODES = (REALTIME, SIMULATION)
+SIM_DAY_SECONDS = 30.0            # default sandbox speed
+CATCHUP_DAYS_PER_TICK = 5.0       # real-time catch-up pace after downtime (keeps the API responsive)
+MAX_CATCHUP_DAYS = 366            # a longer gap starts a new real-time season instead
+RECORDS = (WeatherDaily, FarmDaily, Anomaly, YieldRecord)
+# the sandbox starts with a copy of the real-time history
+FORK_SQL = [
+    "INSERT INTO weather_daily (farm_id, mode, date, data) SELECT farm_id, 'simulation', date, data FROM weather_daily"
+    " WHERE farm_id = :f AND mode = 'realtime'",
+    "INSERT INTO farm_daily (farm_id, mode, date, data) SELECT farm_id, 'simulation', date, data FROM farm_daily"
+    " WHERE farm_id = :f AND mode = 'realtime'",
+    "INSERT INTO anomalies (id, farm_id, mode, key, kind, severity, title, data, started, ended, active)"
+    " SELECT gen_random_uuid()::text, farm_id, 'simulation', key, kind, severity, title, data, started, ended, active"
+    " FROM anomalies WHERE farm_id = :f AND mode = 'realtime'",
+    "INSERT INTO yields (farm_id, mode, section_id, crop_type, kg, robot_id, harvested_at)"
+    " SELECT farm_id, 'simulation', section_id, crop_type, kg, robot_id, harvested_at FROM yields WHERE farm_id = :f AND mode = 'realtime'",
+]
+
+
+async def _drop_records(s, farm_id: str, mode: str, since: date | None = None) -> None:
+    """Delete a timeline's records (only the daily ones dated `since` onwards when given)."""
+    for tbl in (WeatherDaily, FarmDaily) if since else RECORDS:
+        q = delete(tbl).where(tbl.farm_id == farm_id, tbl.mode == mode)
+        await s.execute(q.where(tbl.date >= since.isoformat()) if since else q)
+
+
+def wall_clock(lon: float, now: datetime | None = None) -> tuple[date, float]:
+    """Local mean solar date and day fraction at longitude `lon` (what the sun and the crop see)."""
+    t = (now or datetime.now(timezone.utc)) + timedelta(hours=lon / 15.0)
+    return t.date(), (t.hour * 3600 + t.minute * 60 + t.second + t.microsecond / 1e6) / 86400.0
 
 
 def section_neighbours(polys: list[Polygon], gap: float = 3.2) -> list[list[int]]:
@@ -100,8 +140,10 @@ class WorldEngine:
         self.farm_id: str | None = None
         self.ready = False
         self.task: asyncio.Task | None = None
-        self.day_seconds = 30.0
+        self.mode = REALTIME
+        self.day_seconds = SIM_DAY_SECONDS
         self.paused = False
+        self._resync = False
         self.scenarios: list[dict] = []
         self.forecast: dict | None = None
         self.outlook: list[dict] = []
@@ -121,14 +163,18 @@ class WorldEngine:
         if self.ready:
             await self.snapshot()
 
-    async def load(self, farm_id: str | None, fresh: bool = False) -> None:
-        """(Re)load the world for the active farm. `fresh` starts a new season (crop plan or layout
-        changed): the old snapshot is discarded and the farm's section records are reset."""
+    async def load(self, farm_id: str | None, fresh: bool = False, mode: str = REALTIME, reset: bool = False) -> None:
+        """(Re)load the world for the active farm on one timeline (`mode`, real-time by default).
+
+        `fresh` starts a new season (crop plan or layout changed): the snapshots of both timelines
+        are discarded, the sandbox's records dropped and the section records follow the new state.
+        `reset` (simulation only) discards the sandbox and forks it again from the real-time state."""
         async with self._lock:
-            if self.ready and self.farm_id and not (fresh and self.farm_id == farm_id):
+            if self.ready and self.farm_id and not (fresh and self.farm_id == farm_id) and not reset:
                 await self.snapshot()
             self.ready = False
             self.farm_id = None
+            self.mode = mode
             if not farm_id:
                 return
             async with session_scope() as s:
@@ -137,18 +183,32 @@ class WorldEngine:
                     log.info("world engine idle: farm %s has no site analysis yet", farm_id)
                     return
                 rows = (await s.execute(select(FieldSection).where(FieldSection.farm_id == farm_id))).scalars().all()
-                snap = await s.get(WorldState, farm_id)
-                if fresh and snap is not None:
-                    await s.delete(snap)
-                    snap = None
+                revision = float(farm.world_config["farm"].get("revision", 0))
+
+                def fits(snap):
+                    return snap is not None and snap.extra.get("revision") == revision and snap.extra.get("n") == len(rows)
+
                 if fresh:
-                    for r in rows:
-                        r.state, r.weeds, r.ndvi, r.cwsi, r.disease, r.weed_cover, r.yield_est = "fallow", False, None, None, None, None, None
-                        r.last_survey_at = None
+                    await s.execute(delete(WorldState).where(WorldState.farm_id == farm_id))
+                    await _drop_records(s, farm_id, SIMULATION)
+                    snap = None
+                else:
+                    snap = await s.get(WorldState, (farm_id, mode))
+                    if mode == REALTIME and fits(snap):
+                        today, frac = wall_clock(farm.centroid_lng)
+                        lag = today.toordinal() + frac - date.fromisoformat(snap.sim_date).toordinal() - snap.sim_day_frac
+                        if lag < -1.0:  # ran ahead of the wall clock on the old accelerated clock: that was a simulation
+                            await self._demote_to_sandbox(s, farm_id)
+                            snap = None
+                        elif lag > MAX_CATCHUP_DAYS:
+                            log.info("real-time twin was offline for %.0f days - starting a new season", lag)
+                            snap = None
+                    elif mode == SIMULATION and (reset or not fits(snap)):
+                        snap = await self._fork(s, farm_id)
                 for r in rows:
                     s.expunge(r)
                 s.expunge(farm)
-                if snap is not None:
+                if snap is not None and snap in s:
                     s.expunge(snap)
             if not rows:
                 return
@@ -171,18 +231,19 @@ class WorldEngine:
             self.probes = np.array(sorted(set(np.linspace(0, len(rows) - 1, min(6, len(rows))).astype(int).tolist())))
             self.obs: dict[int, dict] = {}
             self.rng = np.random.default_rng(farm.seed + 5)
-            revision = float(farm.world_config["farm"].get("revision", 0))
+            self.revision = float(farm.world_config["farm"].get("revision", 0))
+            self.day_seconds, self.paused = SIM_DAY_SECONDS, False
             restored = False
-            if snap is not None and snap.extra.get("revision") == revision and snap.extra.get("n") == len(rows):
+            if snap is not None:
                 try:
                     model.load(snap.model)
                     self.gen.load_state(snap.weather)
                     self.sim_date = date.fromisoformat(snap.sim_date)
                     self.frac = float(snap.sim_day_frac)
-                    self.day_seconds = float(snap.day_seconds)
-                    self.paused = bool(snap.paused)
+                    if mode == SIMULATION:
+                        self.day_seconds, self.paused = float(snap.day_seconds), bool(snap.paused)
                     ex = snap.extra
-                    self.scenarios = ex.get("scenarios", [])
+                    self.scenarios = ex.get("scenarios", []) if mode == SIMULATION else []
                     self.obs = {int(k): v for k, v in ex.get("obs", {}).items()}
                     self.ops.load(ex.get("ops", {}))
                     d = ex.get("det", {})
@@ -194,26 +255,50 @@ class WorldEngine:
                 except Exception:  # noqa: BLE001
                     log.exception("world snapshot unusable - starting a fresh season")
             if not restored:
-                start = plan.get("start_date")
-                self.sim_date = date.fromisoformat(start) if start else self._season_start()
+                if mode == REALTIME:  # the live twin starts now
+                    self.sim_date, self.frac = wall_clock(self.lon)
+                else:
+                    start = plan.get("start_date")
+                    self.sim_date = date.fromisoformat(start) if start else self._season_start()
+                    self.frac = 0.25
                 if fresh:  # records of a discarded season dated from here on would read as history
-                    from sqlalchemy import delete as _delete
                     async with session_scope() as s:
-                        for tbl in (WeatherDaily, FarmDaily):
-                            await s.execute(_delete(tbl).where(tbl.farm_id == farm_id, tbl.date >= self.sim_date.isoformat()))
-                self.frac = 0.25
+                        await _drop_records(s, farm_id, mode, since=self.sim_date)
                 self.scenarios = []
                 self.forecast = None
-            self.revision = revision
             self.today = self.gen.step(self.sim_date, self.scenarios)
             self.summary = model.daily_summary(self.today, np.zeros((1, model.n)))
             self.ops.plan(model, self.sim_date, self.obs, nb, float(self.today.rain[0]))
             self._sent = {}
+            self._resync = False
             self.farm_id = farm_id
             self.ready = True
             await self._write_soil()
-            log.info("world model live for %s: %d sections, %s, start %s (%s)", farm.name, len(rows),
+            await self._sync_sections()
+            log.info("world model live for %s (%s): %d sections, %s, %s (%s)", farm.name, mode, len(rows),
                      self.climate.get("source"), self.sim_date, "restored" if restored else "new season")
+
+    async def _fork(self, s, farm_id: str) -> WorldState | None:
+        """A new sandbox: a copy of the real-time snapshot and its history."""
+        await s.execute(delete(WorldState).where(WorldState.farm_id == farm_id, WorldState.mode == SIMULATION))
+        await _drop_records(s, farm_id, SIMULATION)
+        live = await s.get(WorldState, (farm_id, REALTIME))
+        if live is None:
+            return None
+        for sql in FORK_SQL:
+            await s.execute(text(sql), {"f": farm_id})
+        log.info("simulation sandbox forked from the real-time twin at %s", live.sim_date)
+        return WorldState(farm_id=farm_id, mode=SIMULATION, sim_date=live.sim_date, sim_day_frac=live.sim_day_frac,
+                          day_seconds=SIM_DAY_SECONDS, paused=False, model=live.model, weather=live.weather, extra=live.extra)
+
+    async def _demote_to_sandbox(self, s, farm_id: str) -> None:
+        """A real-time snapshot ahead of the wall clock came from the old accelerated clock: keep that run
+        (snapshot and records) as the simulation sandbox, and start the real-time twin afresh."""
+        await s.execute(delete(WorldState).where(WorldState.farm_id == farm_id, WorldState.mode == SIMULATION))
+        await _drop_records(s, farm_id, SIMULATION)
+        for tbl in (WorldState, *RECORDS):
+            await s.execute(update(tbl).where(tbl.farm_id == farm_id, tbl.mode == REALTIME).values(mode=SIMULATION))
+        log.info("accelerated world run kept as the simulation sandbox; the real-time twin starts now")
 
     def _season_start(self) -> date:
         """A week before the main crop's next sowing window (from today's real date)."""
@@ -224,7 +309,7 @@ class WorldEngine:
     # ------------------------------------------------------------------ main loop
     async def _loop(self) -> None:
         last = time.monotonic()
-        t_push = t_wx = 0.0
+        t_push = t_wx = t_snap = 0.0
         while True:
             await asyncio.sleep(0.5)
             now = time.monotonic()
@@ -235,15 +320,25 @@ class WorldEngine:
                 async with self._lock:
                     if not self.ready:
                         continue
-                    if not self.paused:
-                        step = dt / self.day_seconds
-                        self.frac += step
-                        await self._virtual_ops(step)
-                        while self.frac >= 1.0:
-                            self.frac -= 1.0
-                            await self._end_of_day()
+                    if self.mode == REALTIME:
+                        lag = self.lag_days()
+                        if lag > 0:
+                            await self._advance(min(lag, CATCHUP_DAYS_PER_TICK))
+                            if lag > 1.0:
+                                self._resync = True
+                            elif self._resync:  # caught up after downtime: refresh what ran quietly
+                                self._resync = False
+                                await self._sync_sections()
+                                await self.snapshot()
+                                asyncio.create_task(self.refresh_forecast())
+                    elif not self.paused:
+                        await self._advance(dt / self.day_seconds)
                     t_push += dt
                     t_wx += dt
+                    t_snap += dt
+                    if t_snap >= 60.0:  # the real-time day is long: do not lose hours to a restart
+                        t_snap = 0.0
+                        await self.snapshot()
                     if t_push >= 2.0:
                         t_push = 0.0
                         await self._push_field()
@@ -254,8 +349,25 @@ class WorldEngine:
             except Exception:  # noqa: BLE001
                 log.exception("world engine tick failed")
 
+    def lag_days(self) -> float:
+        """How far the real-time twin is behind the wall clock (days)."""
+        d, f = wall_clock(self.lon)
+        return d.toordinal() + f - self.sim_date.toordinal() - self.frac
+
+    async def _advance(self, days: float) -> None:
+        """Move the world forward by `days` (fractional) through the day boundaries it crosses. Days
+        stepped while more than a day remains (real-time catch-up) run quietly."""
+        while days > 1e-9:
+            step = min(days, 1.0 - self.frac)
+            days -= step
+            self.frac += step
+            await self._virtual_ops(step)
+            if self.frac >= 1.0 - 1e-9:
+                self.frac = 0.0
+                await self._end_of_day(quiet=days >= 1.0)
+
     # ------------------------------------------------------------------ day boundary
-    async def _end_of_day(self) -> None:
+    async def _end_of_day(self, quiet: bool = False) -> None:
         m, day = self.model, self.today
         stage_before = m.s["stage"][0].copy()
         ip = m.irrigation
@@ -281,36 +393,36 @@ class WorldEngine:
         wx["probes"] = probes
         d_iso = self.sim_date.isoformat()
         async with session_scope() as s:
-            await s.merge(WeatherDaily(farm_id=self.farm_id, date=d_iso, data=wx))
-            await s.merge(FarmDaily(farm_id=self.farm_id, date=d_iso, data=summary))
+            await s.merge(WeatherDaily(farm_id=self.farm_id, mode=self.mode, date=d_iso, data=wx))
+            await s.merge(FarmDaily(farm_id=self.farm_id, mode=self.mode, date=d_iso, data=summary))
+            mine = (Anomaly.farm_id == self.farm_id, Anomaly.mode == self.mode, Anomaly.active.is_(True))
             for a in new_anoms:
-                row = (await s.execute(select(Anomaly).where(Anomaly.farm_id == self.farm_id, Anomaly.key == a["key"],
-                                                             Anomaly.active.is_(True)))).scalar_one_or_none()
+                row = (await s.execute(select(Anomaly).where(*mine, Anomaly.key == a["key"]))).scalar_one_or_none()
                 if row is None:
-                    s.add(Anomaly(farm_id=self.farm_id, key=a["key"], kind=a["kind"], severity=a["severity"], title=a["title"],
-                                  data=a, started=a["since"]))
+                    s.add(Anomaly(farm_id=self.farm_id, mode=self.mode, key=a["key"], kind=a["kind"], severity=a["severity"],
+                                  title=a["title"], data=a, started=a["since"]))
                 else:
                     row.title, row.severity, row.data = a["title"], a["severity"], a
             for k in cleared:
-                for row in (await s.execute(select(Anomaly).where(Anomaly.farm_id == self.farm_id, Anomaly.key == k,
-                                                                  Anomaly.active.is_(True)))).scalars():
+                for row in (await s.execute(select(Anomaly).where(*mine, Anomaly.key == k))).scalars():
                     row.active, row.ended = False, d_iso
             if len(changed):
                 for r in (await s.execute(select(FieldSection).where(FieldSection.farm_id == self.farm_id,
                                                                      FieldSection.id.in_([self.ids[i] for i in changed])))).scalars():
                     r.state = STAGE_NAMES[int(m.s["stage"][0, self.idx[r.id]])]
+        # next day
+        self.sim_date += timedelta(days=1)
+        self._apply_model_scenarios()
+        self.today = self.gen.step(self.sim_date, self.scenarios)
+        self.ops.plan(m, self.sim_date, self.obs, self.nb, float(self.today.rain[0]))
+        if quiet:
+            return
         for a in new_anoms:
             await fleet.publish_dashboard({"t": "anomaly", "anomaly": a, "date": d_iso})
         for k in cleared:
             await fleet.publish_dashboard({"t": "anomaly_cleared", "key": k, "date": d_iso})
         for i in changed:
             await fleet.publish_dashboard({"t": "section", "id": self.ids[i], "state": STAGE_NAMES[int(m.s["stage"][0, i])]})
-
-        # next day
-        self.sim_date += timedelta(days=1)
-        self._apply_model_scenarios()
-        self.today = self.gen.step(self.sim_date, self.scenarios)
-        self.ops.plan(m, self.sim_date, self.obs, self.nb, float(self.today.rain[0]))
         await self.snapshot()
         if self.sim_date.toordinal() % 7 == 0 or self.forecast is None:
             asyncio.create_task(self.refresh_forecast())
@@ -406,7 +518,7 @@ class WorldEngine:
                     r.weeds, r.weed_cover, r.disease, r.yield_est = False, 0.0, 0.0, None
             for res in results:
                 if res["kg"] > 0:
-                    s.add(YieldRecord(farm_id=self.farm_id, section_id=self.ids[res["i"]], crop_type=m.crop_keys[res["i"]],
+                    s.add(YieldRecord(farm_id=self.farm_id, mode=self.mode, section_id=self.ids[res["i"]], crop_type=m.crop_keys[res["i"]],
                                       kg=res["kg"], robot_id=robot_id or "fleet"))
         for i in idx:
             self.obs.pop(i, None) if kind in ("seed", "harvest") else None
@@ -470,11 +582,19 @@ class WorldEngine:
                 "et0": round(float(d.et0[0]), 2), "tmax": round(float(d.tmax[0]), 1), "tmin": round(float(d.tmin[0]), 1),
                 "hail": bool(d.hail[0]), "scenarios": d.scenarios}
 
+    def time_scale(self) -> float:
+        """Simulated seconds per real second."""
+        if self.mode == REALTIME:
+            return 1.0
+        return 0.0 if self.paused else 86400.0 / self.day_seconds
+
     def clock(self) -> dict:
         crop = self.model.crop_at(0)
-        return {"date": self.sim_date.isoformat(), "hour": round(self.hour(), 2), "doy": self.today.doy, "day_seconds": self.day_seconds,
-                "paused": self.paused, "crop": crop.key, "crop_name": crop.name,
-                "sow_months": list(sow_months_for(crop, self.lat))}
+        rt = self.mode == REALTIME
+        return {"mode": self.mode, "date": self.sim_date.isoformat(), "hour": round(self.hour(), 3), "doy": self.today.doy,
+                "day_seconds": 86400.0 if rt else self.day_seconds, "paused": False if rt else self.paused,
+                "time_scale": self.time_scale(), "catching_up": rt and self._resync, "utc_offset_h": round(self.lon / 15.0, 2),
+                "crop": crop.key, "crop_name": crop.name, "sow_months": list(sow_months_for(crop, self.lat))}
 
     async def _push_world(self) -> None:
         m = self.model
@@ -487,7 +607,8 @@ class WorldEngine:
         await fleet.publish_dashboard(msg)
         r = get_redis()
         await r.set(KEY_NOW, json.dumps({"hour": self.hour(), "irradiance": min(1.1, self.now_weather()["irradiance_wm2"] / 1000),
-                                         "wind": float(self.today.wind[0]) * 1.3, "date": self.sim_date.isoformat()}))
+                                         "wind": float(self.today.wind[0]) * 1.3, "date": self.sim_date.isoformat(),
+                                         "mode": self.mode, "scale": self.time_scale()}))
         pend = {k: [self.ids[i] for i in v[:60]] for k, v in self.ops.pending.items()}
         await r.set(KEY_OPS, json.dumps({"farm_id": self.farm_id, "pending": pend, "workable": self.ops.workable,
                                          "harvest_ok": getattr(self.ops, "harvest_ok", True)}))
@@ -585,7 +706,7 @@ class WorldEngine:
                  "det": {"rain30": list(d.rain30), "heat_run": d.heat_run, "cusum": d.cusum, "active": d.active},
                  "forecast": {k: v for k, v in (self.forecast or {}).items()}}
         async with session_scope() as s:
-            await s.merge(WorldState(farm_id=self.farm_id, sim_date=self.sim_date.isoformat(), sim_day_frac=self.frac,
+            await s.merge(WorldState(farm_id=self.farm_id, mode=self.mode, sim_date=self.sim_date.isoformat(), sim_day_frac=self.frac,
                                      day_seconds=self.day_seconds, paused=self.paused, model=self.model.dump(),
                                      weather=self.gen.state(), extra=extra))
 
@@ -603,6 +724,8 @@ class WorldEngine:
 
     # ------------------------------------------------------------------ control
     async def set_clock(self, day_seconds: float | None = None, paused: bool | None = None) -> None:
+        if self.mode != SIMULATION:
+            raise ValueError("the real-time twin follows the wall clock; switch to simulation mode to change the speed")
         if day_seconds is not None:
             self.day_seconds = float(np.clip(day_seconds, 3.0, 3600.0))
         if paused is not None:
@@ -610,7 +733,60 @@ class WorldEngine:
         if self.ready:
             await self._push_world()
 
+    async def set_mode(self, mode: str) -> None:
+        """Switch timelines. The one left is snapshotted and resumes where it was (the real-time twin
+        then catches up with the wall clock)."""
+        if mode not in MODES:
+            raise ValueError(f"unknown mode {mode}")
+        if self.ready and mode != self.mode:
+            await self.load(self.farm_id, mode=mode)
+        await fleet.publish_dashboard({"t": "world_mode", "mode": self.mode})
+        if self.ready:
+            await self._push_world()
+
+    async def reset_simulation(self) -> None:
+        """Discard the sandbox; it forks again from the real-time state."""
+        fid = self.farm_id
+        if not fid:
+            return
+        if self.mode == SIMULATION:
+            await self.load(fid, mode=SIMULATION, reset=True)
+            await fleet.publish_dashboard({"t": "world_mode", "mode": self.mode})
+            await self._push_world()
+        else:
+            async with session_scope() as s:
+                await s.execute(delete(WorldState).where(WorldState.farm_id == fid, WorldState.mode == SIMULATION))
+                await _drop_records(s, fid, SIMULATION)
+
+    async def _sync_sections(self) -> None:
+        """Section records and the dashboard follow the loaded timeline: stage plus the latest UAV observation."""
+        st = self.model.s["stage"][0]
+        ripe_ish = ("flowering", "grain_fill", "ripe")
+        items = []
+        async with session_scope() as s:
+            rows = {r.id: r for r in (await s.execute(select(FieldSection).where(FieldSection.farm_id == self.farm_id))).scalars()}
+            for i, sid in enumerate(self.ids):
+                o = self.obs.get(i)
+                it = {"id": sid, "state": STAGE_NAMES[int(st[i])], "surveyed": bool(o), "ndvi": None, "cwsi": None, "weeds": False,
+                      "disease": None, "yield_est": None}
+                if o:
+                    it.update(ndvi=o["ndvi"], cwsi=o["cwsi"], weeds=o["weeds"], disease=o["disease"], moisture=min(1.0, o["moisture"]),
+                              health=o["health"], yield_est=o["yield_est_t_ha"] if o["stage"] in ripe_ish else None)
+                items.append(it)
+                r = rows.get(sid)
+                if r is None:
+                    continue
+                r.state, r.ndvi, r.cwsi, r.weeds, r.disease, r.yield_est = (it[k] for k in ("state", "ndvi", "cwsi", "weeds", "disease", "yield_est"))
+                r.weed_cover = o["weed_cover"] if o else None
+                if o:
+                    r.moisture, r.health = it["moisture"], it["health"]
+                else:
+                    r.last_survey_at = None
+        await fleet.publish_dashboard({"t": "sections_sync", "items": items})
+
     async def add_scenario(self, kind: str, days: int, intensity: float, start_in_days: int = 0) -> dict:
+        if self.mode != SIMULATION:
+            raise ValueError("scenarios are what-if experiments: switch to simulation mode to run them")
         sc = {"id": f"{kind}-{int(time.time())}", "kind": kind, "start": self.sim_date.toordinal() + max(0, start_in_days),
               "days": int(days), "intensity": float(intensity), "label": ALL_SCENARIOS.get(kind, kind)}
         async with self._lock:

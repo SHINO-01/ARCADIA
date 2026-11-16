@@ -1,10 +1,10 @@
 /** World model dashboard: the farm as a living simulation - weather, soil water, crop, operations, risk. */
 import { useEffect, useMemo, useState } from 'react'
 import { clsx } from 'clsx'
-import { AlertTriangle, Bug, Pause, Play, CalendarDays, CloudRain, Droplets, FlaskConical, Gauge, Leaf, Snowflake, Sprout, Sun, Thermometer, Tractor, Wind, Zap, DropletOff, RefreshCw, X } from 'lucide-react'
+import { AlertTriangle, Bug, Pause, Play, CalendarDays, FastForward, RotateCcw, CloudRain, Droplets, FlaskConical, Gauge, Leaf, Snowflake, Sprout, Sun, Thermometer, Tractor, Wind, Zap, DropletOff, RefreshCw, X } from 'lucide-react'
 import { Card, Chip, Empty, Kpi, Segmented, Toggle } from '../components/ui'
 import { FanBar, Legend, StackBar, TimeChart } from '../components/charts'
-import { OP_LABEL, SCENARIOS, STAGE_COLORS, STAGE_LABEL, fmtDate, worldApi, type DayWeather, type Kpi as KpiT, type Outlook, type WorldState } from '../lib/world'
+import { OP_LABEL, SCENARIOS, STAGE_COLORS, STAGE_LABEL, fmtDate, worldApi, type DayWeather, type Kpi as KpiT, type Outlook, type WorldMode, type WorldState } from '../lib/world'
 import { useWorld } from '../store/world'
 import { useUI } from '../store/ui'
 
@@ -17,6 +17,7 @@ export function WorldView() {
   const [history, setHistory] = useState<DayWeather[]>([])
   const [outlook, setOutlook] = useState<Outlook[]>([])
   const [daily, setDaily] = useState<(KpiT & { date: string })[]>([])
+  const mode = useWorld((s) => s.clock?.mode)
   useEffect(() => {
     const load = () => {
       worldApi.state().then((s) => { setFull(s); if (s.ready) useWorld.getState().setState(s) }).catch(() => {})
@@ -26,7 +27,7 @@ export function WorldView() {
     load()
     const id = setInterval(load, 15000)
     return () => clearInterval(id)
-  }, [])
+  }, [mode])
   // live days pushed between reloads
   const days = useMemo(() => {
     const seen = new Set(daily.map((d) => d.date))
@@ -169,7 +170,7 @@ function AnomalyCard() {
   const sorted = [...anomalies].sort((a, b) => (b.severity === 'critical' ? 1 : 0) - (a.severity === 'critical' ? 1 : 0))
   return (
     <Card className="col-span-12 lg:col-span-4" title="Anomalies" icon={<AlertTriangle size={15} />} right={<Chip tone={anomalies.length ? 'warn' : 'ok'}>{anomalies.length ? `${anomalies.length} active` : 'all normal'}</Chip>}>
-      {!sorted.length && <p className="text-xs text-fg-3">Weather, soil probes, flow meters and UAV imagery are screened every simulated day: climatology z-scores, SPI, CUSUM control charts and spatial NDVI outliers.</p>}
+      {!sorted.length && <p className="text-xs text-fg-3">Weather, soil probes, flow meters and UAV imagery are screened at the end of every farm day: climatology z-scores, SPI, CUSUM control charts and spatial NDVI outliers.</p>}
       <ul className="space-y-2.5">
         {sorted.map((a) => (
           <li key={a.key} className={clsx('rounded-lg border-l-2 bg-panel-2/60 px-3 py-2', a.severity === 'critical' ? 'border-alert' : 'border-sun')}>
@@ -186,6 +187,7 @@ function AnomalyCard() {
 
 function ScenarioLab({ irrigation }: { irrigation?: WorldState['irrigation'] }) {
   const notify = useUI((s) => s.notify)
+  const sandbox = useWorld((s) => s.clock?.mode === 'simulation')
   const [intensity, setIntensity] = useState(1)
   // local edits override the server value until the next state refresh replaces `irrigation`
   const [edit, setEdit] = useState<{ base: WorldState['irrigation']; value: WorldState['irrigation'] } | null>(null)
@@ -195,14 +197,19 @@ function ScenarioLab({ irrigation }: { irrigation?: WorldState['irrigation'] }) 
     .then((s) => notify(`${s.label} for ${s.days} day${s.days > 1 ? 's' : ''}`, 'ok')).catch((e) => notify(e.message, 'err'))
   return (
     <Card className="col-span-12 lg:col-span-4" title="Scenario lab" icon={<FlaskConical size={15} />}
-      right={<button className="btn btn-ghost" title="Clear all scenarios" onClick={() => worldApi.clearScenarios().then(() => notify('Scenarios cleared', 'ok'))}><X size={12} />clear</button>}>
-      <p className="mb-2 text-[11px] text-fg-3">Stress-test the farm. Scenarios layer on the farm's own climate; the anomaly detectors and the forecast react.</p>
+      right={sandbox && <button className="btn btn-ghost" title="Clear all scenarios" onClick={() => worldApi.clearScenarios().then(() => notify('Scenarios cleared', 'ok'))}><X size={12} />clear</button>}>
+      {sandbox
+        ? <p className="mb-2 text-[11px] text-fg-3">Stress-test the sandbox. Scenarios layer on the farm's own climate; the anomaly detectors and the forecast react. The real-time twin is not affected.</p>
+        : <div className="mb-2 flex items-start gap-2 rounded-lg border border-line bg-panel-2/50 px-2.5 py-2 text-[11px] text-fg-3">
+            <span className="flex-1">The real-time twin follows the farm's actual clock. What-if scenarios run in the simulation sandbox, a copy of the live state you can fast-forward.</span>
+            <button className="btn shrink-0" onClick={() => setMode('simulation', notify)}><FlaskConical size={12} className="text-sun" />Open sandbox</button>
+          </div>}
       <div className="grid grid-cols-2 gap-1.5">
         {SCENARIOS.map((s) => { const I = SCN_ICON[s.kind] ?? Zap; return (
-          <button key={s.kind} className="btn justify-start" onClick={() => run(s.kind, s.days)}><I size={13} className="text-sun" />{s.label}</button>) })}
+          <button key={s.kind} className="btn justify-start" disabled={!sandbox} onClick={() => run(s.kind, s.days)}><I size={13} className="text-sun" />{s.label}</button>) })}
       </div>
-      <label className="mt-3 block text-[11px] text-fg-3">Intensity <span className="num text-fg">{intensity.toFixed(1)}×</span>
-        <input type="range" min={0.4} max={2} step={0.1} value={intensity} onChange={(e) => setIntensity(Number(e.target.value))} className="w-full" /></label>
+      <label className={clsx('mt-3 block text-[11px] text-fg-3', !sandbox && 'opacity-50')}>Intensity <span className="num text-fg">{intensity.toFixed(1)}×</span>
+        <input type="range" min={0.4} max={2} step={0.1} value={intensity} disabled={!sandbox} onChange={(e) => setIntensity(Number(e.target.value))} className="w-full" /></label>
       {irr && (
         <div className="mt-3 border-t border-line pt-3">
           <div className="flex items-center gap-2 text-xs font-medium"><Droplets size={13} className="text-sky" />Irrigation
@@ -217,21 +224,43 @@ function ScenarioLab({ irrigation }: { irrigation?: WorldState['irrigation'] }) 
   )
 }
 
-/** Simulation clock and time controls for the status bar. */
+function setMode(mode: WorldMode, notify: (m: string, tone?: 'ok' | 'err') => void) {
+  worldApi.mode(mode).then(() => notify(mode === 'simulation' ? 'Simulation sandbox: the real-time twin keeps its own state' : 'Back to the real-time twin', 'ok'))
+    .catch((e) => notify(e.message, 'err'))
+}
+
+const hhmm = (h: number) => `${String(Math.floor(h)).padStart(2, '0')}:${String(Math.floor((h % 1) * 60)).padStart(2, '0')}`
+
+/** World clock for the status bar: the real-time twin (default, 1:1 with the wall clock) or the simulation sandbox and its controls. */
 export function WorldClock() {
   const clock = useWorld((s) => s.clock)
   const weather = useWorld((s) => s.weather)
   const notify = useUI((s) => s.notify)
   if (!clock) return null
+  const sim = clock.mode === 'simulation'
   const speeds = [{ value: '120', label: '1d/2m' }, { value: '30', label: '1d/30s' }, { value: '10', label: '1d/10s' }, { value: '4', label: '1d/4s' }]
   const cur = speeds.find((s) => Number(s.value) === Math.round(clock.day_seconds))?.value ?? '30'
+  const tz = `UTC${clock.utc_offset_h >= 0 ? '+' : ''}${clock.utc_offset_h.toFixed(1)}`
   return (
     <div className="flex items-center gap-2">
-      <span className="num whitespace-nowrap rounded-md bg-panel-2 px-2 py-0.5 text-[11px] text-fg" title="Simulation date and time">{fmtDate(clock.date, true)} · {String(Math.floor(clock.hour)).padStart(2, '0')}:{String(Math.floor((clock.hour % 1) * 60)).padStart(2, '0')}</span>
+      <Segmented<WorldMode> size="xs" value={clock.mode} onChange={(m) => setMode(m, notify)} options={[
+        { value: 'realtime', label: <span className="flex items-center gap-1"><span className={clsx('h-1.5 w-1.5 rounded-full', sim ? 'bg-fg-3' : 'animate-pulse bg-leaf')} />Real-time</span>, title: 'The live twin: farm time runs 1:1 with the wall clock' },
+        { value: 'simulation', label: <span className="flex items-center gap-1"><FlaskConical size={10} />Simulation</span>, title: 'What-if sandbox forked from the real-time state: fast-forward, pause, scenarios' },
+      ]} />
+      <span className={clsx('num whitespace-nowrap rounded-md px-2 py-0.5 text-[11px]', sim ? 'bg-sun/15 text-sun' : 'bg-panel-2 text-fg')}
+        title={sim ? 'Sandbox date and time' : `Farm date and local solar time (${tz}), running 1:1 with the wall clock`}>
+        {fmtDate(clock.date, true)} · {hhmm(clock.hour)}</span>
+      {!sim && clock.catching_up && <span className="chip bg-sky/15 text-sky" title="The twin was offline and is stepping through the days it missed">catching up</span>}
       {weather && <span className="num hidden text-[11px] text-fg-2 lg:inline" title="Air temperature">{weather.t.toFixed(0)}°C{weather.rain_today > 0.5 ? ` · ${weather.rain_today} mm` : ''}</span>}
-      <button className="btn btn-ghost px-1.5 py-0.5" aria-label={clock.paused ? 'Resume simulation' : 'Pause simulation'} title={clock.paused ? 'Resume' : 'Pause'}
-        onClick={() => worldApi.clock({ paused: !clock.paused }).catch((e) => notify(e.message, 'err'))}>{clock.paused ? <Play size={12} /> : <Pause size={12} />}</button>
-      <Segmented size="xs" value={cur} options={speeds} onChange={(v) => worldApi.clock({ day_seconds: Number(v) })} />
+      {sim && <>
+        <button className="btn btn-ghost px-1.5 py-0.5" aria-label={clock.paused ? 'Resume simulation' : 'Pause simulation'} title={clock.paused ? 'Resume' : 'Pause'}
+          onClick={() => worldApi.clock({ paused: !clock.paused }).catch((e) => notify(e.message, 'err'))}>{clock.paused ? <Play size={12} /> : <Pause size={12} />}</button>
+        <span className="hidden items-center gap-1 text-fg-3 xl:flex"><FastForward size={11} /></span>
+        <Segmented size="xs" value={cur} options={speeds} onChange={(v) => worldApi.clock({ day_seconds: Number(v) }).catch((e) => notify(e.message, 'err'))} />
+        <button className="btn btn-ghost px-1.5 py-0.5" aria-label="Restart the sandbox from the real-time state" title="Restart the sandbox from the current real-time state"
+          onClick={() => { if (window.confirm('Discard this simulation run and start a new one from the current real-time state?')) worldApi.resetSimulation().then(() => notify('Sandbox restarted from the real-time twin', 'ok')).catch((e) => notify(e.message, 'err')) }}>
+          <RotateCcw size={12} /></button>
+      </>}
     </div>
   )
 }

@@ -85,11 +85,12 @@ export function AlertsView() {
 function AnomalyHistory() {
   const [rows, setRows] = useState<Awaited<ReturnType<typeof worldApi.anomalies>>>([])
   const live = useWorld((s) => s.anomalies.length)
-  useEffect(() => { worldApi.anomalies().then(setRows).catch(() => {}) }, [live])
+  const mode = useWorld((s) => s.clock?.mode)
+  useEffect(() => { worldApi.anomalies().then(setRows).catch(() => {}) }, [live, mode])
   useEffect(() => { const id = setInterval(() => worldApi.anomalies().then(setRows).catch(() => {}), 15000); return () => clearInterval(id) }, [])
   return (
     <Card title="Agronomic anomalies" icon={<Activity size={15} />} right={<Chip tone={rows.some((r) => r.active) ? 'warn' : 'ok'}>{rows.filter((r) => r.active).length} active</Chip>}>
-      {!rows.length && <Empty icon={<ShieldCheck size={26} />} title="No anomalies so far">Weather against the farm's 10-year climatology, drought (SPI-30), soil probes, irrigation flow (CUSUM) and UAV NDVI outliers are screened every simulated day.</Empty>}
+      {!rows.length && <Empty icon={<ShieldCheck size={26} />} title="No anomalies so far">Weather against the farm's 10-year climatology, drought (SPI-30), soil probes, irrigation flow (CUSUM) and UAV NDVI outliers are screened at the end of every farm day.</Empty>}
       <ul className="space-y-2">{rows.map((r) => (
         <li key={r.id} className={clsx('rounded-lg border-l-2 px-3 py-2', r.active ? (r.severity === 'critical' ? 'border-alert bg-alert/5' : 'border-sun bg-sun/5') : 'border-line-2 bg-panel-2/40 opacity-75')}>
           <div className="flex items-center gap-2 text-xs"><span className="font-semibold">{r.title}</span>{r.active ? <Chip tone={r.severity === 'critical' ? 'bad' : 'warn'}>{r.severity}</Chip> : <Chip>resolved</Chip>}
@@ -109,6 +110,7 @@ export function AnalyticsView() {
   const [history, setHistory] = useState<Record<string, number[]>>({})
   const [daily, setDaily] = useState<Awaited<ReturnType<typeof worldApi.daily>>>([])
   const [wx, setWx] = useState<Awaited<ReturnType<typeof worldApi.weather>>['history']>([])
+  const mode = useWorld((s) => s.clock?.mode)
   useEffect(() => {
     const load = async () => {
       api.yields().then(setYields).catch(() => {})
@@ -120,7 +122,7 @@ export function AnalyticsView() {
       }
     }
     load(); const id = setInterval(load, 20000); return () => clearInterval(id)
-  }, [])
+  }, [mode])
   const byDate = Object.fromEntries(wx.map((d) => [d.date, d]))
   const water = daily.reduce<{ date: string; rain: number; et0: number; irr: number }[]>((acc, d) => {
     const w = byDate[d.date]

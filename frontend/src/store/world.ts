@@ -1,6 +1,6 @@
-/** World-model state pushed over the dashboard socket ('world', 'world_day', 'anomaly', 'forecast', 'analysis'). */
+/** World-model state pushed over the dashboard socket ('world', 'world_day', 'world_mode', 'forecast', 'analysis'). */
 import { create } from 'zustand'
-import type { Anomaly, Analysis, Clock, DayWeather, Forecast, Kpi, Ops, WeatherNow, WorldState } from '../lib/world'
+import type { Anomaly, Analysis, Clock, DayWeather, Forecast, Kpi, Ops, WeatherNow, WorldMode, WorldState } from '../lib/world'
 
 interface WorldStore {
   ready: boolean
@@ -28,6 +28,9 @@ export const useWorld = create<WorldStore>((set) => ({
         set({ ready: true, clock: m.clock as Clock, weather: m.weather as WeatherNow, kpi: m.kpi as Kpi, ops: m.ops as Ops,
           anomalies: (m.anomalies as Anomaly[]) ?? [], stages: (m.stages as Record<string, number>) ?? {},
           ...(m.forecast ? { forecast: m.forecast as Forecast } : {}) })
+        break
+      case 'world_mode': // another timeline: its own history arrives with the next loads
+        set((s) => ({ days: [], forecast: null, clock: s.clock ? { ...s.clock, mode: m.mode as WorldMode } : s.clock }))
         break
       case 'world_day':
         set((s) => ({ days: [...s.days, { date: m.date as string, kpi: m.summary as Kpi, weather: m.weather as DayWeather }].slice(-400) }))

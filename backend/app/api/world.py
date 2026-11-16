@@ -55,7 +55,7 @@ async def state():
 @router.get("/weather")
 async def weather(days: int = Query(60, ge=1, le=730), s: AsyncSession = Depends(get_session)):
     _need_world()
-    rows = (await s.execute(select(WeatherDaily).where(WeatherDaily.farm_id == world.farm_id)
+    rows = (await s.execute(select(WeatherDaily).where(WeatherDaily.farm_id == world.farm_id, WeatherDaily.mode == world.mode)
                             .order_by(WeatherDaily.date.desc()).limit(days))).scalars().all()
     return {"history": [{"date": r.date, **{k: v for k, v in r.data.items() if k != "probes"}} for r in reversed(rows)],
             "today": world.now_weather(), "outlook": world.outlook}
@@ -64,7 +64,7 @@ async def weather(days: int = Query(60, ge=1, le=730), s: AsyncSession = Depends
 @router.get("/daily")
 async def daily(days: int = Query(120, ge=1, le=730), s: AsyncSession = Depends(get_session)):
     _need_world()
-    rows = (await s.execute(select(FarmDaily).where(FarmDaily.farm_id == world.farm_id)
+    rows = (await s.execute(select(FarmDaily).where(FarmDaily.farm_id == world.farm_id, FarmDaily.mode == world.mode)
                             .order_by(FarmDaily.date.desc()).limit(days))).scalars().all()
     return [{"date": r.date, **r.data} for r in reversed(rows)]
 
@@ -92,7 +92,7 @@ async def truth():
 @router.get("/anomalies")
 async def anomalies(active_only: bool = False, limit: int = Query(100, le=1000), s: AsyncSession = Depends(get_session)):
     _need_world()
-    q = select(Anomaly).where(Anomaly.farm_id == world.farm_id)
+    q = select(Anomaly).where(Anomaly.farm_id == world.farm_id, Anomaly.mode == world.mode)
     if active_only:
         q = q.where(Anomaly.active.is_(True))
     rows = (await s.execute(q.order_by(Anomaly.started.desc()).limit(limit))).scalars().all()
@@ -108,8 +108,32 @@ class ClockBody(BaseModel):
 
 @router.post("/clock")
 async def set_clock(body: ClockBody):
+    """Speed and pause of the simulation sandbox (the real-time twin follows the wall clock)."""
     _need_world()
-    await world.set_clock(body.day_seconds, body.paused)
+    try:
+        await world.set_clock(body.day_seconds, body.paused)
+    except ValueError as e:
+        raise HTTPException(409, str(e)) from e
+    return world.clock()
+
+
+class ModeBody(BaseModel):
+    mode: Literal["realtime", "simulation"]
+
+
+@router.post("/mode")
+async def set_mode(body: ModeBody):
+    """Switch between the real-time twin (default, 1:1 with the wall clock) and the simulation sandbox."""
+    _need_world()
+    await world.set_mode(body.mode)
+    return world.clock()
+
+
+@router.post("/simulation/reset")
+async def reset_simulation():
+    """Discard the simulation sandbox; it forks again from the current real-time state."""
+    _need_world()
+    await world.reset_simulation()
     return world.clock()
 
 
@@ -128,7 +152,10 @@ async def scenarios():
 @router.post("/scenarios")
 async def add_scenario(body: ScenarioBody):
     _need_world()
-    return await world.add_scenario(body.kind, body.days, body.intensity, body.start_in_days)
+    try:
+        return await world.add_scenario(body.kind, body.days, body.intensity, body.start_in_days)
+    except ValueError as e:
+        raise HTTPException(409, str(e)) from e
 
 
 @router.delete("/scenarios")

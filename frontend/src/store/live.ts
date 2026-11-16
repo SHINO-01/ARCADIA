@@ -140,7 +140,17 @@ export const useLive = create<LiveState>((set, get) => ({
             useWorld.getState().apply(m)
             break
           }
-          case 'world': case 'world_day': case 'forecast': case 'analysis': useWorld.getState().apply(m); break
+          case 'sections_sync': { // the world switched timelines: every section's state and observation is replaced
+            sectionOverrides.clear()
+            for (const it of m.items as Record<string, unknown>[]) {
+              const { id, ...rest } = it
+              sectionOverrides.set(id as string, rest)
+            }
+            cellVersion++
+            set({ cellVersion })
+            break
+          }
+          case 'world': case 'world_day': case 'world_mode': case 'forecast': case 'analysis': useWorld.getState().apply(m); break
           case 'anomaly': pushFeed({ kind: 'anomaly', robot_id: null, severity: m.anomaly.severity === 'critical' ? 'ERROR' : 'WARN', payload: { title: m.anomaly.title } }); break
           case 'event': {
             const e = m.event

@@ -1,8 +1,9 @@
 """Renewable microgrid model for the charging docks.
 
-Each dock is a self-sustaining solar or wind microgrid with battery storage. A compressed
-day/night cycle (ARCADIA_DAY_LENGTH_S real seconds per simulated day) drives irradiance; a
-seeded Ornstein-Uhlenbeck process drives wind. Robots charging at a dock draw from storage.
+Each dock is a self-sustaining solar or wind microgrid with battery storage. Sun, wind and the
+pace of time come from the agronomic world model: 1:1 on the real-time twin, accelerated in the
+simulation sandbox. Without a running world model a compressed day/night cycle (DAY_LENGTH_S real
+seconds per day) and a seeded Ornstein-Uhlenbeck wind stand in. Robots charging draw from storage.
 """
 from __future__ import annotations
 
@@ -14,6 +15,7 @@ import time
 from app.core.redis import KEY_ENERGY, get_sync_redis
 
 DAY_LENGTH_S = 600.0
+MAX_STORAGE_SCALE = 60.0  # storage integrates at most 60x real time (a fast sandbox would swing it empty/full)
 CHARGE_DRAW_KW = {"scout_uav": 0.6, "seeder_ugv": 3.2, "cropcare_ugv": 2.2, "harvester_ugv": 3.6, "logistics_agv": 4.5}
 
 
@@ -56,10 +58,12 @@ def tick(infra: list[dict], fleet: dict[str, dict], dt: float, model: MicrogridM
         w = json.loads(now)
         hour, irr = float(w["hour"]), float(w["irradiance"])
         wind = model.wind = 0.7 * model.wind + 0.3 * float(w.get("wind", model.wind))
+        scale = min(MAX_STORAGE_SCALE, float(w.get("scale", 1.0)))
     else:
         hour = sim_hour()
         irr = irradiance(hour)
         wind = model.step_wind(dt)
+        scale = MAX_STORAGE_SCALE
     out = []
     for site in infra:
         if not site["kind"].endswith("dock"):
@@ -73,7 +77,7 @@ def tick(infra: list[dict], fleet: dict[str, dict], dt: float, model: MicrogridM
                 consumed += CHARGE_DRAW_KW.get(rb.get("type", ""), 2.0)
         prev = r.hget(KEY_ENERGY, site["slug"])
         stored = json.loads(prev)["stored_kwh"] if prev else site.get("stored_kwh", 40.0)
-        stored = max(0.0, min(site["storage_kwh"], stored + (gen - consumed) * dt / 3600.0 * 60.0))  # 60x compressed
+        stored = max(0.0, min(site["storage_kwh"], stored + (gen - consumed) * dt * scale / 3600.0))
         reading = {"slug": site["slug"], "kind": site["kind"], "generated_kw": round(gen, 3),
                    "consumed_kw": round(consumed, 3), "stored_kwh": round(stored, 3),
                    "storage_kwh": site["storage_kwh"], "irradiance": round(irr, 3), "wind_ms": round(wind, 2),

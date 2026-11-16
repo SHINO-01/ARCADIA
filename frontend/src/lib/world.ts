@@ -14,7 +14,12 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
 const post = <T,>(path: string, body?: unknown) => req<T>(path, { method: 'POST', body: body === undefined ? undefined : JSON.stringify(body) })
 
 export interface Q { p10: number; p50: number; p90: number }
-export interface Clock { date: string; hour: number; doy: number; day_seconds: number; paused: boolean; crop: string; crop_name: string; sow_months: number[] }
+/** 'realtime': the live twin on the farm's wall clock (1:1). 'simulation': the accelerated what-if sandbox forked from it. */
+export type WorldMode = 'realtime' | 'simulation'
+export interface Clock {
+  mode: WorldMode; date: string; hour: number; doy: number; day_seconds: number; paused: boolean; time_scale: number; catching_up: boolean
+  utc_offset_h: number; crop: string; crop_name: string; sow_months: number[]
+}
 export interface WeatherNow { t: number; irradiance_wm2: number; rh: number; wind: number; rain_today: number; cloud: number; et0: number; tmax: number; tmin: number; hail: boolean; scenarios: string[] }
 export interface Kpi {
   date: string; lai: number; biomass_t_ha: number; yield_pot_t: number; moisture: number; ks: number; irrigation_m3: number; weed: number
@@ -65,6 +70,8 @@ export const worldApi = {
   refreshForecast: () => post<Forecast>('/world/forecast/refresh'),
   anomalies: (activeOnly = false) => req<(Anomaly & { id: string; started: string; ended: string | null; active: boolean })[]>(`/world/anomalies?active_only=${activeOnly}`),
   clock: (body: { day_seconds?: number; paused?: boolean }) => post<Clock>('/world/clock', body),
+  mode: (mode: WorldMode) => post<Clock>('/world/mode', { mode }),
+  resetSimulation: () => post<Clock>('/world/simulation/reset'),
   addScenario: (body: { kind: string; days: number; intensity: number; start_in_days?: number }) => post<Scenario>('/world/scenarios', body),
   clearScenarios: () => req<{ ok: boolean }>('/world/scenarios', { method: 'DELETE' }),
   irrigation: (body: { enabled?: boolean; mad?: number; capacity_mm?: number }) => post<WorldState['irrigation']>('/world/irrigation', body),
