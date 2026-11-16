@@ -40,8 +40,8 @@ async def operator_dispatch(robot_id: str, body: DispatchRequest, s: AsyncSessio
     live = await fleet.get_robot(robot_id) or {}
     rx, ry = float(live.get("x", robot.x or 0)), float(live.get("y", robot.y or 0))
     z = 6.0 if robot.type == "scout_uav" else 0.0
-    kind = body.kind if body.kind in ("goto", "seed", "weed", "harvest", "survey", "charge") else "goto"
-    if robot.type == "scout_uav" and kind in ("seed", "weed", "harvest"):
+    kind = body.kind if body.kind in ("goto", "seed", "fertilise", "weed", "spray", "harvest", "survey", "charge") else "goto"
+    if robot.type == "scout_uav" and kind in ("seed", "fertilise", "weed", "spray", "harvest"):
         kind = "survey"  # the scout carries cameras, not tools: it inspects the section instead
     payload: dict = {}
     target_section = body.target_section
@@ -51,7 +51,7 @@ async def operator_dispatch(robot_id: str, body: DispatchRequest, s: AsyncSessio
         sec = (await s.execute(select(FieldSection).where(FieldSection.farm_id == farm.id, FieldSection.id == body.target_section))).scalar_one_or_none()
         if sec is None:
             raise HTTPException(404, "section not found")
-    if sec is not None and robot.type != "scout_uav" and kind in ("seed", "weed", "harvest"):
+    if sec is not None and robot.type != "scout_uav" and kind in ("seed", "fertilise", "weed", "spray", "harvest"):
         # seed/weed: tramline pass beside the bed; harvest: pass down the bed itself
         wps, pass_from, _ = section_mission(farm, sec, rx, ry, kind)
         payload = {"section": sec.id, "bed": sec.bed_id, "crop": sec.crop, "pass_from": pass_from}
@@ -69,7 +69,7 @@ async def operator_dispatch(robot_id: str, body: DispatchRequest, s: AsyncSessio
             wps = [{"x": round(tx, 3), "y": round(ty, 3), "z": z, "lat": lat, "lng": lng}]
         else:  # ground units never leave the tracks: the target snaps to the nearest track point
             wps, _ = ground_route(farm, rx, ry, tx, ty)
-            if kind in ("survey", "seed", "weed", "harvest"):  # work needs a section; without one it is a move
+            if kind in ("survey", "seed", "fertilise", "weed", "spray", "harvest"):  # work needs a section; else a move
                 kind = "goto"
     if not wps:
         raise HTTPException(409, "no route on the track network")
@@ -84,6 +84,12 @@ async def operator_dispatch(robot_id: str, body: DispatchRequest, s: AsyncSessio
     s.add(m)
     await s.commit()
     await s.refresh(m)
+    if payload.get("section"):  # keep the farm's virtual fleet off the section this unit is working
+        import json as _json
+        import time as _time
+
+        from app.core.redis import get_redis
+        await get_redis().hset("arcadia:ops:claims", payload["section"], _json.dumps({"kind": kind, "robot": robot_id, "ts": _time.time()}))
     dispatch_mission.delay(m.id)
     await fleet.update_robot(robot_id, manual_override=True)
     return m

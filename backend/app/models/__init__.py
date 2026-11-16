@@ -1,11 +1,15 @@
 from app.models.entities import (  # noqa: F401
+    Anomaly,
     EnergyLog,
     Farm,
+    FarmDaily,
     FieldSection,
     Incident,
     Infrastructure,
     Mission,
     Robot,
     Telemetry,
+    WeatherDaily,
+    WorldState,
     YieldRecord,
 )

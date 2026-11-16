@@ -1,5 +1,5 @@
 /** RTS-style unit command bar: appears when units are selected (bottom of the map). */
-import { Crosshair, Home, Loader, Play, Repeat, Route, Square, Trash2, X, Zap } from 'lucide-react'
+import { Beaker, Crosshair, Home, Loader, Play, Repeat, Route, Scissors, SprayCan, Sprout, Square, Trash2, Undo2, Wheat, X, Zap } from 'lucide-react'
 import { clsx } from 'clsx'
 import { api } from '../lib/api'
 import { ROBOT_COLOR, ROBOT_LABEL } from '../lib/types'
@@ -7,7 +7,10 @@ import { liveRegistry, useLive } from '../store/live'
 import { useUI, type DispatchKind } from '../store/ui'
 import { Bar } from './ui'
 
-const TASKS: Record<string, DispatchKind[]> = { scout_uav: ['survey'], seeder_ugv: ['seed', 'weed', 'harvest'], cropcare_ugv: ['weed', 'seed', 'harvest'], harvester_ugv: ['harvest', 'weed', 'seed'], logistics_agv: [] }
+const FIELD_OPS: DispatchKind[] = ['seed', 'fertilise', 'weed', 'spray', 'harvest']
+const TASKS: Record<string, DispatchKind[]> = { scout_uav: ['survey'], seeder_ugv: FIELD_OPS, cropcare_ugv: FIELD_OPS, harvester_ugv: FIELD_OPS, logistics_agv: [] }
+const TASK_ICON: Record<string, typeof Zap> = { seed: Sprout, fertilise: Beaker, weed: Scissors, spray: SprayCan, harvest: Wheat, survey: Zap }
+const TASK_LABEL: Record<string, string> = { seed: 'Sow', fertilise: 'Fertilise', weed: 'Weed', spray: 'Spray', harvest: 'Harvest', survey: 'Survey' }
 
 export function CommandBar() {
   const { selected, selectedRobot, dispatchArm, armDispatch, route, routeLoop, setRouteLoop, clearRoute, popRoutePoint, select, notify } = useUI()
@@ -36,9 +39,9 @@ export function CommandBar() {
           </div>) })}
       </div>
       {/* orders */}
-      <div className="grid grid-cols-4 gap-1">
+      <div className="grid grid-cols-5 gap-1">
         <Cmd icon={<Crosshair size={13} />} label="Move" hint="right-click map" active={dispatchArm?.kind === 'goto'} onClick={() => prim && armDispatch(dispatchArm?.kind === 'goto' ? null : { robotId: prim.id, kind: 'goto' })} />
-        {kinds.slice(0, 3).map((k) => <Cmd key={k} icon={<Zap size={13} />} label={k[0].toUpperCase() + k.slice(1)} hint="click a bed" active={dispatchArm?.kind === k} onClick={() => prim && armDispatch(dispatchArm?.kind === k ? null : { robotId: prim.id, kind: k })} />)}
+        {kinds.map((k) => { const I = TASK_ICON[k] ?? Zap; return <Cmd key={k} icon={<I size={13} />} label={TASK_LABEL[k] ?? k} hint="click a bed" active={dispatchArm?.kind === k} onClick={() => prim && armDispatch(dispatchArm?.kind === k ? null : { robotId: prim.id, kind: k })} /> })}
         <Cmd icon={<Square size={13} />} label="Stop" hint="S" tone="warn" onClick={() => run('Stop', api.stop)} />
         <Cmd icon={<Home size={13} />} label="Dock" hint="H" onClick={() => run('Return to dock', api.returnHome)} />
         <Cmd icon={<Loader size={13} />} label="Auto" hint="hand back" onClick={() => run('Automated dispatch', api.resumeAuto)} />
@@ -51,7 +54,7 @@ export function CommandBar() {
         <div className="flex items-center gap-1">
           <button className={clsx('btn', routeLoop && 'btn-primary')} onClick={() => setRouteLoop(!routeLoop)} title="Loop as patrol"><Repeat size={12} />loop</button>
           <button className="btn btn-primary" disabled={!route.length} onClick={() => sendRoute(routeLoop)}><Play size={12} />{routeLoop ? 'Patrol' : 'Go'}</button>
-          <button className="btn" disabled={!route.length} onClick={popRoutePoint} title="Undo last waypoint">↶</button>
+          <button className="btn" disabled={!route.length} onClick={popRoutePoint} title="Undo last waypoint" aria-label="Undo last waypoint"><Undo2 size={12} /></button>
           <button className="btn" disabled={!route.length} onClick={clearRoute} title="Clear route"><Trash2 size={12} /></button>
         </div>
       </div>

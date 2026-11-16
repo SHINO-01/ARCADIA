@@ -2,7 +2,9 @@
 
 Runs from a Celery beat tick. Agronomic state lives on bed *sections*:
   * the Scout UAV surveys sections whose last observation is stale (lawn-mower order, bed by bed);
-  * ground units work a section by driving the tramline beside it ("work pass"); they reach it,
+  * ground units take the season's field work (seed, fertilise, weed, spray, harvest) from the
+    world model's campaign queues, shared with the farm's virtual fleet; they work a section by
+    driving the tramline beside it ("work pass"); they reach it,
     and every other destination, over the track network only - never across a bed;
   * harvest is the one exception: the harvester leaves the tramline at the section's end, drives
     down the bed's centre line cutting the crop, and steps back onto the same tramline.
@@ -26,8 +28,6 @@ SURVEY_STALE_S = 300.0
 SURVEY_BATCH = 24
 MIN_BATTERY = 30.0
 UGV_TYPES = ("seeder_ugv", "cropcare_ugv", "harvester_ugv")
-UGV_MULTITOOL = True  # under the 2-robot cap the single active UGV seeds, weeds and harvests
-ROLE_TASK = {"seeder_ugv": "seed", "cropcare_ugv": "weed", "harvester_ugv": "harvest"}
 UAV_ALT = 6.0
 PLANTED = ("seeded", "growing", "ripe")
 
@@ -165,17 +165,28 @@ def plan_for_robot(s: Session, farm: Farm, robot: Robot, state: dict) -> Mission
                        payload={"sections": [c.id for c in batch]}, note=f"Aerial survey of {len(batch)} bed sections")
 
     if robot.type in UGV_TYPES:
-        tasks = ["harvest", "weed", "seed"] if UGV_MULTITOOL else [ROLE_TASK[robot.type]]
-        for task in tasks:
-            if task == "harvest":
-                cand = [c for c in secs if c.state == "ripe"]
-            elif task == "weed":  # weeding protects a crop; fallow ground is cultivated when it is seeded
-                cand = [c for c in secs if c.weeds and c.state in PLANTED]
-            else:
-                cand = [c for c in secs if c.state in ("fallow", "harvested") and c.last_survey_at is not None]
+        # Field work comes from the season's campaigns (world model): the virtual fleet works the same
+        # queues; a claim keeps it off the section this robot is heading for.
+        import json as _json
+        import time as _time
+
+        from app.core.redis import get_sync_redis
+        from app.services.operations import KINDS
+        r = get_sync_redis()
+        raw = r.get("arcadia:ops:pending")
+        if not raw:
+            return None
+        ops = _json.loads(raw)
+        if ops.get("farm_id") != farm.id or not ops.get("workable", True):
+            return None
+        claims = {k.decode() if isinstance(k, bytes) else k for k in r.hkeys("arcadia:ops:claims")}
+        by_id = {c.id: c for c in secs}
+        for task in KINDS:
+            if task == "harvest" and not ops.get("harvest_ok", True):
+                continue
+            cand = [by_id[sid] for sid in ops["pending"].get(task, []) if sid in by_id and sid not in claims]
             if not cand:
                 continue
-            # nearest few by straight line, then the true track distance decides
             cand.sort(key=lambda c: (c.x - rx) ** 2 + (c.y - ry) ** 2)
             best = None
             for c in cand[:6]:
@@ -185,7 +196,8 @@ def plan_for_robot(s: Session, farm: Farm, robot: Robot, state: dict) -> Mission
             if best is None:
                 continue
             c, wps, pass_from, length = best
-            prio = {"harvest": 1, "weed": 2, "seed": 4}[task]
+            prio = {"harvest": 1, "spray": 2, "weed": 2, "fertilise": 3, "seed": 4}[task]
+            r.hset("arcadia:ops:claims", c.id, _json.dumps({"kind": task, "robot": robot.id, "ts": _time.time()}))
             return Mission(farm_id=farm.id, robot_id=robot.id, kind=task, source="auto", priority=prio, target_section=c.id,
                            waypoints=wps, payload={"section": c.id, "bed": c.bed_id, "crop": c.crop, "pass_from": pass_from},
                            note=f"{task.title()} section {c.id} ({c.crop}) · " +

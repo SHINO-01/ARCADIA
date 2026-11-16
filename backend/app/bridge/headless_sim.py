@@ -5,8 +5,9 @@ laptop, CI, or the hardware is busy), the BridgeManager falls back to this modul
 entire platform still behaves end-to-end. It speaks the *same* wire protocol as the Webots
 stack (TelemetryFrame / SimEvent / Command) so nothing downstream knows the difference.
 
-Ground truth (crop growth, weeds, moisture) lives here, exactly as it lives in the Webots
-Supervisor in the real stack; the backend only learns about it through observations.
+Crop ground truth lives in the backend's agronomic world model (app.services.world_engine), as it
+does for the Webots stack: this twin only moves robots, decides when the scout UAV has a section in
+view (`section_seen`) and reports field work (seeded/fertilised/weeded/sprayed/harvested).
 """
 from __future__ import annotations
 
@@ -25,16 +26,17 @@ log = logging.getLogger("arcadia.twin")
 TelemetrySink = Callable[[TelemetryFrame], Awaitable[None]]
 EventSink = Callable[[SimEvent], Awaitable[None]]
 
-GROW_S = {"seeded": 70.0, "growing": 110.0}  # accelerated agronomy: seeded -> growing -> ripe
 TIME_COMPRESSION = 12.0  # battery minutes pass 12x faster than wall-clock so energy matters in a demo
 WORK_SPEED = 0.5  # m/s while a tool is engaged on a work pass
-WEED_RATE = 0.00002  # new weed patches per section per second (~1 per 2 min on a 450-section field)
-from app.services.field import YIELD_KG_M2  # noqa: E402
+WORK_KINDS = ("seed", "fertilise", "weed", "spray", "harvest")
+WORK_EVENT = {"seed": "seeded", "fertilise": "fertilised", "weed": "weeded", "spray": "sprayed", "harvest": "harvested"}
+SEEN_COOLDOWN_S = 20.0
+BROADCAST = ("field_state", "weather", "set_irradiance", "set_view", "world_load")
 
 
 @dataclass
 class Section:
-    """Ground truth of one bed section (the agronomic unit)."""
+    """Geometry of one bed section (the world model owns its agronomic state)."""
     id: str
     bed: str
     crop: str
@@ -42,12 +44,7 @@ class Section:
     y: float
     length: float
     width: float
-    state: str = "fallow"
-    weeds: bool = False
-    moisture: float = 0.5
-    health: float = 1.0
-    t_state: float = 0.0
-    observed_sig: str = ""
+    seen_t: float = -1e9
 
 
 @dataclass
@@ -125,12 +122,8 @@ class HeadlessTwin:
         self.world = world
         self.rng = random.Random(world.get("farm", {}).get("seed", 7))
         self.sections = {c["id"]: Section(id=c["id"], bed=c.get("bed", ""), crop=c["crop"], x=c["x"], y=c["y"],
-                                          length=c.get("length", 10.0), width=c.get("width", 4.0),
-                                          moisture=c.get("moisture", 0.5)) for c in world.get("sections", [])}
-        # Hidden ground truth: some sections already carry weeds, moisture varies.
-        for c in self.sections.values():
-            c.weeds = self.rng.random() < 0.10
-            c.moisture = min(1.0, max(0.05, c.moisture + self.rng.gauss(0, 0.06)))
+                                          length=c.get("length", 10.0), width=c.get("width", 4.0)) for c in world.get("sections", [])}
+        self.wet_tracks = False
         self.hazards = list(world.get("hazards", []))
         self.net = None
         if world.get("tracks"):
@@ -162,6 +155,11 @@ class HeadlessTwin:
             return
         if cmd.kind == "set_speed":
             self.speed_factor = float(cmd.payload.get("factor", 1.0))
+            return
+        if cmd.kind == "weather":
+            self.wet_tracks = bool(cmd.payload.get("wet_tracks", False))
+            return
+        if cmd.kind in BROADCAST and not cmd.robot_id:
             return
         r = self.robots.get(cmd.robot_id or "")
         if r is None:
@@ -318,7 +316,6 @@ class HeadlessTwin:
             if self.world and not self._paused:
                 dt = min(real_dt, 0.25) * self.speed_factor
                 self.sim_time += dt
-                self._grow(dt)
                 for r in self.robots.values():
                     if r.active:
                         await self._step_robot(r, dt)
@@ -328,20 +325,6 @@ class HeadlessTwin:
                         if r.active or self._tick % (self.telemetry_every * 5) == 0:
                             await self.on_telemetry(self._frame(r))
             await asyncio.sleep(self.dt)
-
-    def _grow(self, dt: float) -> None:
-        for c in self.sections.values():
-            c.t_state += dt
-            if c.state == "seeded" and c.t_state > GROW_S["seeded"]:
-                c.state, c.t_state = "growing", 0.0
-            elif c.state == "growing" and c.t_state > GROW_S["growing"] * (1.3 - 0.3 * c.moisture):
-                c.state, c.t_state = "ripe", 0.0
-            elif c.state == "harvested" and c.t_state > 40.0:
-                c.state, c.t_state = "fallow", 0.0
-            if not c.weeds and self.rng.random() < WEED_RATE * dt:
-                c.weeds = True
-            c.moisture = max(0.02, c.moisture - 0.00025 * dt)
-            c.health = max(0.2, c.health - 0.0006 * dt) if c.weeds else min(1.0, c.health + 0.0003 * dt)
 
     async def _step_robot(self, r: RobotSim, dt: float) -> None:
         spec = r.spec
@@ -394,7 +377,7 @@ class HeadlessTwin:
             r.x, r.y = tx, ty
             await self._reached(r, wp)
             return
-        if m.get("kind") in ("seed", "weed", "harvest") and r.wp_i > int(m.get("pass_from", 10 ** 6)):
+        if m.get("kind") in WORK_KINDS and r.wp_i > int(m.get("pass_from", 10 ** 6)):
             vmax = min(vmax, WORK_SPEED)  # tool engaged on the work pass
         v = min(vmax, dist / max(dt, 1e-3))
         r.heading = math.atan2(dy, dx)
@@ -410,7 +393,7 @@ class HeadlessTwin:
         r.cpu = 0.3 + 0.2 * (v / vmax)
         if r.is_uav and (m.get("kind") == "survey" or m.get("observe")):
             self._observe(r)
-        if not r.is_uav and v > 0.2 and r.fault is None:
+        if not r.is_uav and v > 0.2 and r.fault is None and self.wet_tracks:
             for hz in self.hazards:  # waterlogged low spots on the tramlines / headland
                 if (hz["x"] - r.x) ** 2 + (hz["y"] - r.y) ** 2 < hz.get("r", 3.5) ** 2 and self.rng.random() < 0.04 * dt:
                     await self._inject(r, {"fault": "stuck_terrain", "params": {"terrain": "waterlogged track", "hazard": hz["id"],
@@ -426,19 +409,18 @@ class HeadlessTwin:
                                                   "battery_pct": 0.0}))
 
     def _observe(self, r: RobotSim) -> None:
+        """Proximity mock CV: the section is in the scout's footprint -> `section_seen`."""
         rad = r.spec.get("sensor_radius_m", 8.0)
         for c in self.sections.values():
             if (c.x - r.x) ** 2 + (c.y - r.y) ** 2 > (rad + c.length / 2) ** 2:
                 continue
-            sig = f"{c.state}|{int(c.weeds)}|{round(c.moisture, 1)}|{round(c.health, 1)}"
-            if c.id in r.visited and c.observed_sig == sig:
-                continue
             r.visited.add(c.id)
-            c.observed_sig = sig
-            self._queue_event(SimEvent(kind="section_observed", robot_id=r.id,
+            if self.sim_time - c.seen_t < SEEN_COOLDOWN_S:
+                continue
+            c.seen_t = self.sim_time
+            self._queue_event(SimEvent(kind="section_seen", robot_id=r.id, section=c.id,
                                        mission_id=r.mission.get("mission_id") if r.mission else None,
-                                       payload={"section": c.id, "state": c.state, "weeds": c.weeds,
-                                                "moisture": round(c.moisture, 3), "health": round(c.health, 3)}))
+                                       payload={"section": c.id, "altitude_m": round(r.z, 1)}))
 
     _pending_events: list[SimEvent] = []
 
@@ -482,26 +464,11 @@ class HeadlessTwin:
         m = r.mission
         kind = m.get("kind")
         extra: dict = {}
-        if kind in ("seed", "weed", "harvest"):
+        if kind in WORK_KINDS:
             c = self.sections.get(m.get("section", "")) or self._nearest_section(r.x, r.y)
             if c:
-                if kind == "seed":  # the drill cultivates as it sows: weeds go with it
-                    c.state, c.t_state, c.weeds = "seeded", 0.0, False
-                    await self.on_event(SimEvent(kind="seeded", robot_id=r.id, mission_id=m.get("mission_id"),
-                                                 payload={"section": c.id, "crop": c.crop}))
-                elif kind == "weed":
-                    c.weeds = False
-                    c.health = min(1.0, c.health + 0.3)
-                    await self.on_event(SimEvent(kind="weeded", robot_id=r.id, mission_id=m.get("mission_id"),
-                                                 payload={"section": c.id, "health": round(c.health, 3)}))
-                elif kind == "harvest":
-                    was = c.state  # only a ripe crop yields; an early cut clears the bed for nothing
-                    kg = round(self.rng.uniform(0.8, 1.2) * YIELD_KG_M2.get(c.crop, 0.8) * c.length * c.width, 1) \
-                        if was == "ripe" else 0.0
-                    c.state, c.t_state = "harvested", 0.0
-                    extra["kg"] = kg
-                    await self.on_event(SimEvent(kind="harvested", robot_id=r.id, mission_id=m.get("mission_id"),
-                                                 payload={"section": c.id, "crop": c.crop, "kg": kg, "was": was}))
+                await self.on_event(SimEvent(kind=WORK_EVENT[kind], robot_id=r.id, section=c.id, mission_id=m.get("mission_id"),
+                                             payload={"section": c.id, "crop": c.crop}))
                 extra["section"] = c.id
         elif kind == "tow":
             target = self.robots.get(r.towing or "")

@@ -29,9 +29,9 @@ const SATELLITE_STYLE: StyleSpecification = {
     attribution: 'Imagery © Esri, Maxar, Earthstar Geographics' } },
   layers: [{ id: 'esri', type: 'raster', source: 'esri' }],
 }
-const STATE_COLORS: Record<string, string> = { fallow: '#6b5a3e', seeded: '#8a7a45', growing: '#3fb95a', ripe: '#f5c451', harvested: '#4b5f52' }
+import { STAGE_COLORS, worldApi } from '../lib/world'
 
-export interface FarmMapHandle { startDraw: () => void; clearDraw: () => void; fitFarm: () => void }
+export interface FarmMapHandle { startDraw: () => void; clearDraw: () => void; fitFarm: () => void; flyTo: (lng: number, lat: number, zoom?: number) => void }
 export interface FarmMapProps { visible: boolean; onDrawn: (feature: GeoJSON.Feature<GeoJSON.Polygon>, areaM2: number) => void; onFps?: (fps: number) => void }
 
 export const FarmMap = forwardRef<FarmMapHandle, FarmMapProps>(function FarmMap({ visible, onDrawn, onFps }, ref) {
@@ -43,7 +43,7 @@ export const FarmMap = forwardRef<FarmMapHandle, FarmMapProps>(function FarmMap(
   const popupRef = useRef<maplibregl.Popup | null>(null)
   const [ready, setReady] = useState(false)
   const [imagery, setImagery] = useState(false)  // first full render (satellite tiles can be slow)
-  const { farm, mode, layer, dispatchArm, selected, selectedRobot, route, hoverInfo, armDispatch, setHoverInfo, notify } = useUI()
+  const { farm, mode, layer, overlays, dispatchArm, selected, selectedRobot, route, hoverInfo, armDispatch, setHoverInfo, notify } = useUI()
   const cellVersion = useLive((s) => s.cellVersion)
   const chaosFlash = useLive((s) => s.chaosFlash)
   const fleet = useLive((s) => s.fleet)
@@ -74,6 +74,7 @@ export const FarmMap = forwardRef<FarmMapHandle, FarmMapProps>(function FarmMap(
     startDraw: () => { boundary.current = { active: true, pts: [], done: false }; renderBoundary() },
     clearDraw: () => resetBoundary(),
     fitFarm: () => { const m = mapRef.current; if (m && farm) { const b = turf.bbox(farm.boundary as GeoJSON.Feature); m.fitBounds([[b[0], b[1]], [b[2], b[3]]], { padding: 60, duration: 700, maxZoom: 17.5 }) } },
+    flyTo: (lng, lat, zoom = 15.5) => mapRef.current?.flyTo({ center: [lng, lat], zoom, duration: 1600, essential: true }),
   }), [farm])
 
   // ---------------------------------------------------------------- init
@@ -92,7 +93,7 @@ export const FarmMap = forwardRef<FarmMapHandle, FarmMapProps>(function FarmMap(
       // physical layout: tracks under beds, beds, hazards and yard pads on top
       map.addSource('layout', { type: 'geojson', data: { type: 'FeatureCollection', features: [] }, promoteId: 'id' })
       map.addLayer({ id: 'track-fill', type: 'fill', source: 'layout', filter: ['==', ['get', 'layer'], 'track'],
-        paint: { 'fill-color': ['match', ['get', 'kind'], 'lane', TRACK_COLOR.lane, 'spur', TRACK_COLOR.spur, TRACK_COLOR.headland], 'fill-opacity': 0.92 } })
+        paint: { 'fill-color': ['match', ['get', 'kind'], 'lane', TRACK_COLOR.lane, 'spur', TRACK_COLOR.spur, 'road', '#7d7f86', TRACK_COLOR.headland], 'fill-opacity': 0.92 } })
       map.addLayer({ id: 'section-fill', type: 'fill', source: 'layout', filter: ['==', ['get', 'layer'], 'section'],
         paint: { 'fill-color': ['coalesce', ['feature-state', 'color'], '#6b5a3e'], 'fill-opacity': ['case', ['boolean', ['feature-state', 'hover'], false], 0.95, 0.8] } })
       map.addLayer({ id: 'section-line', type: 'line', source: 'layout', filter: ['==', ['get', 'layer'], 'section'],
@@ -104,6 +105,11 @@ export const FarmMap = forwardRef<FarmMapHandle, FarmMapProps>(function FarmMap(
         paint: { 'fill-color': ['match', ['get', 'kind'], 'solar_dock', INFRA_COLOR.solar_dock, 'wind_dock', INFRA_COLOR.wind_dock, 'storage', INFRA_COLOR.storage, INFRA_COLOR.repair_station], 'fill-opacity': 0.55 } })
       map.addSource('weeds', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } })
       map.addLayer({ id: 'weeds', type: 'circle', source: 'weeds', paint: { 'circle-radius': ['interpolate', ['linear'], ['zoom'], 15, 2.5, 18, 6], 'circle-color': '#ff4d5e', 'circle-stroke-color': '#0b1410', 'circle-stroke-width': 1 } })
+      map.addSource('detect', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } })
+      map.addLayer({ id: 'detect-obst', type: 'fill', source: 'detect', filter: ['==', ['geometry-type'], 'Polygon'],
+        paint: { 'fill-color': ['match', ['get', 'kind'], 'building', '#e3825a', 'water', '#5fade8', 'trees', '#2f7d4a', '#888'], 'fill-opacity': 0.45, 'fill-outline-color': '#0a0f0d' } })
+      map.addLayer({ id: 'detect-road', type: 'line', source: 'detect', filter: ['==', ['geometry-type'], 'LineString'],
+        paint: { 'line-color': '#e2b44a', 'line-width': ['interpolate', ['linear'], ['zoom'], 14, 1.5, 18, 4], 'line-dasharray': [2, 1.2], 'line-opacity': 0.9 } })
       map.addSource('beds', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } })
       map.addLayer({ id: 'bed-label', type: 'symbol', source: 'beds', minzoom: 15.5, layout: { 'text-field': ['get', 'label'], 'text-size': 10, 'text-rotate': ['get', 'rot'], 'text-rotation-alignment': 'map', 'text-font': ['Open Sans Semibold'], 'text-allow-overlap': false }, paint: { 'text-color': '#ffffff', 'text-halo-color': '#0b1410', 'text-halo-width': 1.2 } })
       map.addSource('infra', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } })
@@ -173,11 +179,8 @@ export const FarmMap = forwardRef<FarmMapHandle, FarmMapProps>(function FarmMap(
       popupRef.current?.remove()
       const p = { ...f0.properties, ...(f0.properties?.layer === 'section' ? sectionOverrides.get(String(f0.properties?.id)) ?? {} : {}) } as Record<string, unknown>
       const html = p.layer === 'section'
-        ? `<div style="color:#7ce38b;font-weight:600">Section ${p.id} · ${String(p.bed).replace('bed-', 'Bed ')}</div>
-           <div>${p.crop} · <b>${p.state}</b>${p.surveyed ? '' : ' <span style="color:#6b8273">(not surveyed yet)</span>'}</div>
-           <div>moisture ${(Number(p.moisture) * 100).toFixed(0)}% · health ${(Number(p.health) * 100).toFixed(0)}%${p.weeds ? ' · <span style="color:#ff4d5e">weeds</span>' : ''}</div>
-           <div style="color:#6b8273">machines work it from the tramlines either side</div>`
-        : p.layer === 'track' ? `<div style="font-weight:600">${{ lane: 'Tramline', headland: 'Headland', alley: 'Farm track (alley)', spur: 'Yard spur' }[String(p.kind)] ?? p.kind}</div><div style="color:#6b8273">${p.id}</div>`
+        ? sectionPopup(p)
+        : p.layer === 'track' ? `<div style="font-weight:600">${{ lane: 'Tramline', headland: 'Headland', alley: 'Farm track (alley)', spur: 'Yard spur', road: 'Existing road (from imagery)' }[String(p.kind)] ?? p.kind}</div><div style="color:#6b8273">${p.id}</div>`
         : p.layer === 'hazard' ? '<div style="color:#5cc8ff;font-weight:600">Waterlogged low spot</div><div>ground vehicles can bog down here</div>'
         : `<div style="font-weight:600">${p.id}</div><div style="color:#6b8273">${String(p.kind).replace('_', ' ')} · farm yard</div>`
       popupRef.current = new maplibregl.Popup({ closeButton: false, maxWidth: '280px' }).setLngLat(e.lngLat)
@@ -249,6 +252,38 @@ export const FarmMap = forwardRef<FarmMapHandle, FarmMapProps>(function FarmMap(
 
   useEffect(() => { const map = mapRef.current as (MLMap & { __layout?: GeoJSON.FeatureCollection }) | null; if (map?.__layout && ready) paintSections(map, map.__layout, layer) }, [layer, cellVersion, ready])
 
+  // site-analysis overlays: roads and obstacles found in the imagery, the classification image, soil maps
+  const analysisV = useLive((s) => s.cellVersion) // cheap tick so overlays refresh after re-plans
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map || !ready) return
+    const setImage = (id: string, url: string | null, coords: number[][] | null, before: string, opacity: number) => {
+      if (map.getLayer(id)) map.removeLayer(id)
+      if (map.getSource(id)) map.removeSource(id)
+      if (!url || !coords) return
+      map.addSource(id, { type: 'image', url, coordinates: coords as [[number, number], [number, number], [number, number], [number, number]] })
+      map.addLayer({ id, type: 'raster', source: id, paint: { 'raster-opacity': opacity, 'raster-fade-duration': 200 } }, map.getLayer(before) ? before : undefined)
+    }
+    const det = map.getSource('detect') as GeoJSONSource | undefined
+    if (!farm) { det?.setData({ type: 'FeatureCollection', features: [] }); setImage('imgprev', null, null, 'track-fill', 0); setImage('soilimg', null, null, 'bed-label', 0); return }
+    let cancelled = false
+    worldApi.analysis(farm.id).then((a) => {
+      if (cancelled) return
+      const im = a.imagery
+      const feats: GeoJSON.Feature[] = []
+      if (im && overlays.detections) {
+        for (const r of im.roads) feats.push({ type: 'Feature', geometry: { type: 'LineString', coordinates: r.lnglat }, properties: { kind: 'road', width: r.width_m, inside: r.inside } })
+        for (const o of im.obstacles) if (o.lnglat.length >= 4) feats.push({ type: 'Feature', geometry: { type: 'Polygon', coordinates: [o.lnglat] }, properties: { kind: o.kind, inside: o.inside } })
+      }
+      det?.setData({ type: 'FeatureCollection', features: feats })
+      setImage('imgprev', overlays.imagery && im?.preview_corners ? `/api/farms/${farm.id}/imagery.jpg?v=${farm.id.slice(0, 6)}${a.status?.pct ?? ''}` : null, im?.preview_corners ?? null, 'track-fill', 0.85)
+    }).catch(() => det?.setData({ type: 'FeatureCollection', features: [] }))
+    if (overlays.soil && farm.status === 'active') {
+      worldApi.soilLayers().then((sl) => { if (!cancelled) setImage('soilimg', `/api/world/soil/${overlays.soil}.png?f=${farm.id.slice(0, 6)}`, sl.coordinates, 'bed-label', 0.8) }).catch(() => {})
+    } else setImage('soilimg', null, null, 'bed-label', 0)
+    return () => { cancelled = true }
+  }, [farm?.id, farm?.plan, farm?.status, overlays.detections, overlays.imagery, overlays.soil, ready, analysisV > -1]) // eslint-disable-line react-hooks/exhaustive-deps
+
   // mission path + target for the primary selection
   useEffect(() => {
     const map = mapRef.current
@@ -307,6 +342,20 @@ export const FarmMap = forwardRef<FarmMapHandle, FarmMapProps>(function FarmMap(
   )
 })
 
+function sectionPopup(p: Record<string, unknown>): string {
+  const pct = (v: unknown) => (v == null ? '—' : `${Math.round(Number(v) * 100)}%`)
+  const soil = (typeof p.soil === 'string' ? JSON.parse(p.soil as string) : p.soil) as Record<string, number> | null
+  const muted = 'color:#72857a'
+  const row = (k: string, v: string) => `<div style="display:flex;gap:12px"><span style="${muted}">${k}</span><span style="margin-left:auto">${v}</span></div>`
+  return `<div style="color:#5fd68e;font-weight:600">Section ${p.id} · ${String(p.bed).replace('bed-', 'Bed ')}</div>
+    <div style="margin-bottom:4px">${p.crop} · <b>${String(p.state ?? '').replace('_', ' ')}</b></div>
+    ${p.surveyed || p.ndvi != null ? [row('NDVI', p.ndvi == null ? '—' : Number(p.ndvi).toFixed(2)), row('Water stress (CWSI)', p.cwsi == null ? '—' : Number(p.cwsi).toFixed(2)),
+      row('Soil water', pct(p.moisture)), row('Health', pct(p.health)), row('Disease', p.disease ? pct(p.disease) : 'none seen'),
+      row('Weeds', p.weeds ? '<span style="color:#f06464">present</span>' : 'none seen'), p.yield_est != null ? row('Yield estimate', `${Number(p.yield_est).toFixed(1)} t/ha`) : ''].join('')
+      : `<div style="${muted}">not scouted yet: the UAV measures it on its next survey</div>`}
+    ${soil ? `<div style="margin-top:4px;border-top:1px solid #1e2b25;padding-top:4px">${row('Soil', `clay ${soil.clay}% · OM ${soil.om}% · pH ${soil.ph}`)}${row('Available water', `${soil.taw_mm_m} mm/m`)}${row('Salinity', `${soil.ec} dS/m`)}</div>` : ''}`
+}
+
 /** One label per bed, placed on its middle section and rotated along the bed. */
 function bedLabels(layout: GeoJSON.FeatureCollection): GeoJSON.FeatureCollection {
   const byBed = new Map<string, GeoJSON.Feature<GeoJSON.Polygon>[]>()
@@ -331,10 +380,13 @@ function paintSections(map: MLMap, layout: GeoJSON.FeatureCollection, layer: str
     if (f.properties?.layer !== 'section') continue
     const p = { ...f.properties, ...(sectionOverrides.get(String(f.properties.id)) ?? {}) } as Record<string, unknown>
     let color: string
+    const unseen = '#3a4741'
     if (layer === 'plan' || layer === 'crop') color = CROP_COLORS[String(p.crop)] ?? '#888'
-    else if (layer === 'moisture') color = ramp(Number(p.moisture ?? 0.5), ['#8a6a3d', '#c9a96a', '#5cc8ff', '#1d5fd1'])
-    else if (layer === 'health') color = ramp(Number(p.health ?? 1), ['#ff4d5e', '#f5c451', '#7ce38b'])
-    else color = STATE_COLORS[String(p.state)] ?? '#6b5a3e'
+    else if (layer === 'moisture') color = p.moisture == null ? unseen : ramp(Number(p.moisture), ['#8a6a3d', '#c9a96a', '#5fade8', '#1d5fd1'])
+    else if (layer === 'health') color = p.health == null ? unseen : ramp(Number(p.health), ['#f06464', '#e2b44a', '#5fd68e'])
+    else if (layer === 'ndvi') color = p.ndvi == null ? unseen : ramp(Number(p.ndvi), ['#8a6a3d', '#c9b46a', '#7fc45a', '#1f7a3c'])
+    else if (layer === 'yield') color = p.yield_est == null ? unseen : ramp(Math.min(1, Number(p.yield_est) / 14), ['#4b3a26', '#c9a640', '#e2b44a', '#fff1b8'])
+    else color = STAGE_COLORS[String(p.state)] ?? '#6b5a3e'
     map.setFeatureState({ source: 'layout', id: String(p.id) }, { color })
     if (p.weeds) weeds.push({ type: 'Feature', geometry: turf.centroid(f as GeoJSON.Feature<GeoJSON.Polygon>).geometry, properties: { id: p.id } })
   }

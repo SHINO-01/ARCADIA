@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field, model_validator
 
 # ----------------------------------------------------------------------------- wire protocol
 FaultKind = Literal["motor_jam", "battery_drop", "network_latency", "sensor_glitch", "stuck_terrain"]
-MissionKind = Literal["survey", "seed", "weed", "harvest", "tow", "charge", "goto", "patrol"]
+MissionKind = Literal["survey", "seed", "fertilise", "weed", "spray", "harvest", "tow", "charge", "goto", "patrol"]
 RobotStatus = Literal["idle", "active", "charging", "fault", "stranded", "towing", "towed", "offline", "returning"]
 
 
@@ -55,7 +55,8 @@ class SimEvent(BaseModel):
 class Command(BaseModel):
     """Backend -> simulation command (ROS arcadia_msgs/Command mirrors this)."""
     kind: Literal["mission", "cancel", "return_home", "chaos", "clear_fault", "world_load",
-                  "set_active", "tow", "pause", "resume", "set_speed", "set_view", "set_irradiance"]
+                  "set_active", "tow", "pause", "resume", "set_speed", "set_view", "set_irradiance",
+                  "field_state", "weather"]
     robot_id: str | None = None
     payload: dict[str, Any] = Field(default_factory=dict)
     command_id: str | None = None
@@ -87,6 +88,13 @@ class PlanRequest(BaseModel):
     alley_spacing: float = Field(default=0.0, ge=0.0, le=1000.0, description="cross alleys every N m (0 = auto)")
     orientation: Literal["auto", "ew", "ns"] = "auto"
     shuffle_crops: bool = False
+    use_roads: bool = True
+
+
+class CropPlanRequest(BaseModel):
+    crop: str = "maize"
+    rotation_crop: str | None = None
+    start_date: str | None = None  # ISO date the season (simulation clock) starts
 
 
 class RoutePoint(BaseModel):
@@ -120,6 +128,7 @@ class FarmOut(BaseModel):
     area_m2: float
     status: str
     plan: dict | None
+    crop_plan: dict | None = None
     seed: int
     created_at: datetime
     model_config = {"from_attributes": True}

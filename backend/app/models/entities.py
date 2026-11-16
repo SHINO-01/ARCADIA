@@ -33,6 +33,8 @@ class Farm(Base):
     status: Mapped[str] = mapped_column(String(24), default="mapped")  # mapped|planned|active|archived
     plan: Mapped[dict | None] = mapped_column(JSONType, nullable=True)  # k-means report
     world_config: Mapped[dict | None] = mapped_column(JSONType, nullable=True)  # payload for Webots spawner
+    setup: Mapped[dict | None] = mapped_column(JSONType, nullable=True)  # site analysis: imagery, climate, soil
+    crop_plan: Mapped[dict | None] = mapped_column(JSONType, nullable=True)  # {crop, rotation?, sections: {id: crop}}
     seed: Mapped[int] = mapped_column(Integer, default=42)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
@@ -66,7 +68,60 @@ class FieldSection(Base):
     polygon: Mapped[list] = mapped_column(JSONType)   # ENU ring
     passes: Mapped[list] = mapped_column(JSONType)    # tramline work passes
     last_survey_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # latest UAV measurements (world-model sensor model, with noise)
+    ndvi: Mapped[float | None] = mapped_column(Float, nullable=True)
+    cwsi: Mapped[float | None] = mapped_column(Float, nullable=True)
+    disease: Mapped[float | None] = mapped_column(Float, nullable=True)
+    weed_cover: Mapped[float | None] = mapped_column(Float, nullable=True)
+    yield_est: Mapped[float | None] = mapped_column(Float, nullable=True)   # t/ha fresh
+    soil: Mapped[dict | None] = mapped_column(JSONType, nullable=True)      # clay, sand, om, ec, taw, twi ...
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class WorldState(Base):
+    """Agronomic world-model snapshot per farm (resumes the simulation after a restart)."""
+    __tablename__ = "world_states"
+
+    farm_id: Mapped[str] = mapped_column(ForeignKey("farms.id", ondelete="CASCADE"), primary_key=True)
+    sim_date: Mapped[str] = mapped_column(String(10))          # ISO date
+    sim_day_frac: Mapped[float] = mapped_column(Float, default=0.25)
+    day_seconds: Mapped[float] = mapped_column(Float, default=30.0)
+    paused: Mapped[bool] = mapped_column(Boolean, default=False)
+    model: Mapped[str] = mapped_column(Text)                   # base64 npz of the field state
+    weather: Mapped[dict] = mapped_column(JSONType)            # generator state
+    extra: Mapped[dict] = mapped_column(JSONType)              # scenarios, operations, observations, detector
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class WeatherDaily(Base):
+    __tablename__ = "weather_daily"
+
+    farm_id: Mapped[str] = mapped_column(ForeignKey("farms.id", ondelete="CASCADE"), primary_key=True)
+    date: Mapped[str] = mapped_column(String(10), primary_key=True)
+    data: Mapped[dict] = mapped_column(JSONType)
+
+
+class FarmDaily(Base):
+    __tablename__ = "farm_daily"
+
+    farm_id: Mapped[str] = mapped_column(ForeignKey("farms.id", ondelete="CASCADE"), primary_key=True)
+    date: Mapped[str] = mapped_column(String(10), primary_key=True)
+    data: Mapped[dict] = mapped_column(JSONType)
+
+
+class Anomaly(Base):
+    __tablename__ = "anomalies"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    farm_id: Mapped[str] = mapped_column(ForeignKey("farms.id", ondelete="CASCADE"), index=True)
+    key: Mapped[str] = mapped_column(String(32))
+    kind: Mapped[str] = mapped_column(String(32))
+    severity: Mapped[str] = mapped_column(String(10))
+    title: Mapped[str] = mapped_column(String(200))
+    data: Mapped[dict] = mapped_column(JSONType)               # detail, method, value, threshold, action, sections
+    started: Mapped[str] = mapped_column(String(10))
+    ended: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
 
 
 class Infrastructure(Base):

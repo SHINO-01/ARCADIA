@@ -1,5 +1,6 @@
 """Every operation end to end in the headless twin, with the controlled-traffic rule checked on
-every telemetry frame: ground units are never on a bed, except a harvester on its harvest pass."""
+every telemetry frame: ground units are never on a bed, except a harvester on its harvest pass.
+(Crop truth and yields live in the world model - see test_agro.py.)"""
 import asyncio
 
 import pytest
@@ -52,13 +53,11 @@ async def test_every_operation_respects_the_beds():
 
     twin = HeadlessTwin(on_t, on_e, hz=50.0, telemetry_hz=25.0)
     twin.load_world(d.world)
-    for c in twin.sections.values():
-        c.weeds = False  # deterministic start
     twin.speed_factor = 40.0
     twin.start()
     ugv, agv = twin.robots["ugv-1"], twin.robots["agv-1"]
     secs = list(d.secs.values())
-    a, b = secs[3], secs[len(secs) // 2]
+    a = secs[3]
     try:
         # survey: the scout flies straight over the beds (airborne, 6 m up)
         await twin.handle_command(Command(kind="mission", robot_id="uav-1", payload=_mission(
@@ -68,38 +67,26 @@ async def test_every_operation_respects_the_beds():
         await twin.handle_command(Command(kind="mission", robot_id="ugv-1", payload=_mission(
             "seed", "seed", wps, section=a.id, pass_from=pf)))
         assert await _until(events, _done("seed")), [e.kind for e in events][-8:]
-        assert twin.sections[a.id].state == "seeded"
+        assert any(e.kind == "seeded" and e.section == a.id for e in events)
         assert await _until(events, _done("survey"))
-        assert any(e.kind == "section_observed" for e in events)
+        seen = {e.section for e in events if e.kind == "section_seen"}
+        assert {s.id for s in secs[:6]} <= seen  # mock CV: every overflown section was in view
 
         # weed section a (now planted) from the other end
-        twin.sections[a.id].weeds = True
-        wps, pf, _ = section_mission(d.farm, a, ugv.x, ugv.y, "weed")
-        await twin.handle_command(Command(kind="mission", robot_id="ugv-1", payload=_mission(
-            "weed", "weed", wps, section=a.id, pass_from=pf)))
-        assert await _until(events, _done("weed"))
-        assert not twin.sections[a.id].weeds
+        for kind in ("fertilise", "weed", "spray"):
+            wps, pf, _ = section_mission(d.farm, a, ugv.x, ugv.y, kind)
+            await twin.handle_command(Command(kind="mission", robot_id="ugv-1", payload=_mission(
+                kind, kind, wps, section=a.id, pass_from=pf)))
+            assert await _until(events, _done(kind)), kind
+        assert {"fertilised", "weeded", "sprayed"} <= {e.kind for e in events if e.section == a.id}
 
         # harvest: let the crop ripen, then the one pass that drives on a bed
-        twin.sections[a.id].state = "ripe"
         wps, pf, _ = section_mission(d.farm, a, ugv.x, ugv.y, "harvest")
         harvest_pass["harvest"] = a.id
         await twin.handle_command(Command(kind="mission", robot_id="ugv-1", payload=_mission(
             "harvest", "harvest", wps, section=a.id, pass_from=pf)))
         assert await _until(events, _done("harvest"))
-        h = next(e for e in events if e.kind == "harvested")
-        assert h.payload["section"] == a.id and h.payload["was"] == "ripe" and h.payload["kg"] > 0
-        assert twin.sections[a.id].state == "harvested"
-
-        # an early cut (operator override on a growing crop) yields nothing
-        twin.sections[b.id].state, twin.sections[b.id].t_state = "seeded", -1e9  # stays unripe at 40x
-        wps, pf, _ = section_mission(d.farm, b, ugv.x, ugv.y, "harvest")
-        harvest_pass["early"] = b.id
-        await twin.handle_command(Command(kind="mission", robot_id="ugv-1", payload=_mission(
-            "early", "harvest", wps, section=b.id, pass_from=pf)))
-        assert await _until(events, _done("early"))
-        early = [e for e in events if e.kind == "harvested"][-1]
-        assert early.payload["was"] == "seeded" and early.payload["kg"] == 0.0
+        assert any(e.kind == "harvested" and e.section == a.id for e in events)
 
         # goto aimed at the middle of a bed: snapped onto a track
         wps, _ = ground_route(d.farm, ugv.x, ugv.y, secs[-5].x, secs[-5].y)

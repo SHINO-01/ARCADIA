@@ -1,9 +1,10 @@
 import { create } from 'zustand'
 import type { Farm } from '../lib/types'
 
-export type View = 'plan' | 'ops' | 'twin' | 'alerts' | 'analytics'
+export type View = 'plan' | 'world' | 'ops' | 'twin' | 'alerts' | 'analytics'
 export type Mode = 'draw' | 'plan' | 'ops'
-export type DispatchKind = 'goto' | 'seed' | 'weed' | 'harvest' | 'survey'
+export type DispatchKind = 'goto' | 'seed' | 'fertilise' | 'weed' | 'spray' | 'harvest' | 'survey'
+export type MapLayer = 'plan' | 'state' | 'ndvi' | 'moisture' | 'health' | 'yield' | 'crop'
 export interface RoutePoint { lat: number; lng: number }
 
 interface UIState {
@@ -17,7 +18,9 @@ interface UIState {
   route: RoutePoint[]                // route being built with shift+right-click
   routeLoop: boolean
   hoverInfo: string | null
-  layer: 'plan' | 'state' | 'moisture' | 'health' | 'crop'
+  layer: MapLayer
+  overlays: { detections: boolean; imagery: boolean; soil: string | null }
+  onboarding: boolean
   follow: string | null              // 3D camera follow target
   mapSlot: HTMLElement | null        // the active view's map placeholder (map is mounted once in App)
   toast: { msg: string; kind: 'ok' | 'err' | 'info'; id: number } | null
@@ -35,6 +38,8 @@ interface UIState {
   setRouteLoop: (v: boolean) => void
   setHoverInfo: (h: string | null) => void
   setLayer: (l: UIState['layer']) => void
+  setOverlays: (o: Partial<UIState['overlays']>) => void
+  setOnboarding: (v: boolean) => void
   setFollow: (id: string | null) => void
   setMapSlot: (el: HTMLElement | null) => void
   notify: (msg: string, kind?: 'ok' | 'err' | 'info') => void
@@ -43,7 +48,7 @@ interface UIState {
 let toastId = 0
 export const useUI = create<UIState>((set) => ({
   view: 'plan', mode: 'draw', farms: [], farm: null, selected: [], selectedRobot: null, dispatchArm: null, route: [], routeLoop: true,
-  hoverInfo: null, layer: 'plan', follow: null, mapSlot: null, toast: null,
+  hoverInfo: null, layer: 'state', overlays: { detections: true, imagery: false, soil: null }, onboarding: false, follow: null, mapSlot: null, toast: null,
   setView: (view) => set((s) => ({ view, mode: view === 'plan' ? (s.farm ? 'plan' : 'draw') : view === 'ops' ? 'ops' : s.mode })),
   setMode: (mode) => set({ mode }),
   setFarms: (farms) => set({ farms }),
@@ -61,6 +66,8 @@ export const useUI = create<UIState>((set) => ({
   setRouteLoop: (routeLoop) => set({ routeLoop }),
   setHoverInfo: (hoverInfo) => set({ hoverInfo }),
   setLayer: (layer) => set({ layer }),
+  setOverlays: (o) => set((s) => ({ overlays: { ...s.overlays, ...o } })),
+  setOnboarding: (onboarding) => set({ onboarding }),
   setFollow: (follow) => set({ follow }),
   setMapSlot: (mapSlot) => set({ mapSlot }),
   notify: (msg, kind = 'info') => {

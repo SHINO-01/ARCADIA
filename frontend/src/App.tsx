@@ -3,16 +3,21 @@ import { clsx } from 'clsx'
 import { FarmMap, type FarmMapHandle } from './components/FarmMap'
 import { CommandBar } from './components/CommandBar'
 import { Legend } from './components/Legend'
-import { NavRail, StatusBar } from './components/Shell'
+import { NavRail, StatusBar, VIEW_KEYS } from './components/Shell'
+import { Onboarding } from './components/Onboarding'
+import { WorldView } from './views/WorldView'
 import { IncidentModal } from './panels/IncidentsPanel'
 import { AlertsView, AnalyticsView, OpsView, PlanView, TwinView } from './views/views'
 import { api } from './lib/api'
 import { useLive } from './store/live'
 import { useUI } from './store/ui'
 
+// Debug handle for the browser console (inspection only): window.__arcadia.ui.getState()
+;(window as unknown as { __arcadia: unknown }).__arcadia = { ui: useUI }
+
 export default function App() {
   const connect = useLive((s) => s.connect)
-  const { view, setView, toast, dispatchArm, armDispatch, farm, selected, select, clearRoute, route, popRoutePoint, notify, mapSlot } = useUI()
+  const { view, setView, toast, dispatchArm, armDispatch, farm, selected, select, clearRoute, route, popRoutePoint, notify, mapSlot, onboarding, setOnboarding } = useUI()
   const [drawn, setDrawn] = useState<{ feature: GeoJSON.Feature<GeoJSON.Polygon>; areaM2: number } | null>(null)
   const [fps, setFps] = useState(0)
   const mapRef = useRef<FarmMapHandle>(null)
@@ -27,9 +32,8 @@ export default function App() {
       const tag = (e.target as HTMLElement)?.tagName
       if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return
       if (e.key === 'Escape') { if (dispatchArm) armDispatch(null); else if (route.length) clearRoute(); else select([]) }
-      const views = { '1': 'plan', '2': 'ops', '3': 'twin', '4': 'alerts', '5': 'analytics' } as const
-      if (e.key in views) {
-        const v = views[e.key as keyof typeof views]
+      if (e.key in VIEW_KEYS) {
+        const v = VIEW_KEYS[e.key]
         const live = useUI.getState().farms.find((f) => f.status === 'active')
         if (v === 'plan') setView(v)
         else if (live) { if (farm?.id !== live.id) useUI.getState().setFarm(live); setView(v) }
@@ -65,6 +69,7 @@ export default function App() {
         <StatusBar fps={fps} />
         <main ref={mainRef} className="relative min-h-0 flex-1 bg-bg">
           {view === 'plan' && <PlanView drawn={drawn} onStartDraw={() => mapRef.current?.startDraw()} onClearDraw={() => { mapRef.current?.clearDraw(); setDrawn(null) }} />}
+          {view === 'world' && <WorldView />}
           {view === 'ops' && <OpsView />}
           {view === 'twin' && <TwinView />}
           {view === 'alerts' && <AlertsView />}
@@ -76,6 +81,9 @@ export default function App() {
             {view === 'plan' && farm?.plan && <div className="pointer-events-none absolute bottom-3 left-3"><Legend /></div>}
             {view === 'ops' && farm?.plan && <div className="pointer-events-none absolute left-3 top-3"><Legend compact /></div>}
             {view === 'ops' && <CommandBar />}
+            {view === 'plan' && onboarding && <Onboarding onClose={() => setOnboarding(false)}
+              onLocate={(lng, lat) => mapRef.current?.flyTo(lng, lat, 15.5)}
+              onDraw={() => { setOnboarding(false); mapRef.current?.startDraw() }} />}
             {view === 'ops' && <div className="pointer-events-none absolute right-12 top-3 rounded-md bg-bg/80 px-2 py-1 text-[10px] text-fg-3">click unit · ctrl+click multi · right-click move · shift+right-click waypoint</div>}
           </div>
         </main>

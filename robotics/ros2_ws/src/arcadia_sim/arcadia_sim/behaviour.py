@@ -9,8 +9,8 @@ import time
 from dataclasses import dataclass, field
 
 TIME_COMPRESSION = 12.0
-WORK_KINDS = ("seed", "weed", "harvest")
-WORK_EVENT = {"seed": "seeded", "weed": "weeded", "harvest": "harvested"}
+WORK_KINDS = ("seed", "fertilise", "weed", "spray", "harvest")
+WORK_EVENT = {"seed": "seeded", "fertilise": "fertilised", "weed": "weeded", "spray": "sprayed", "harvest": "harvested"}
 WORK_SPEED = 0.5  # m/s while a tool is engaged on a work pass
 BATTERY_RESERVE_PCT = 22.0  # below this a robot abandons its mission and returns to its dock on its own
 

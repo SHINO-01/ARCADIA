@@ -1,8 +1,9 @@
 """Domain-event handler: everything the simulation tells us flows through here.
 
 The sim (Webots supervisor + robot controllers, or the headless twin) emits SimEvents. This
-module turns them into durable state: hex-cell observations, mission lifecycle, incidents,
-yields, and fleet status updates, then fans a compact version out to dashboards.
+module turns them into durable state - mission lifecycle, incidents, fleet status - and hands the
+agronomy to the world model (UAV sightings become measurements, work events change the field and
+book yields), then fans a compact version out to dashboards.
 """
 from __future__ import annotations
 
@@ -12,10 +13,9 @@ from datetime import datetime, timezone
 from sqlalchemy import select, update
 
 from app.core.db import session_scope
-from app.models import FieldSection, Incident, Mission, Robot, YieldRecord
+from app.models import Incident, Mission, Robot
 from app.schemas import Command, SimEvent
 from app.services import fleet
-from app.services.field import YIELD_KG_M2
 
 log = logging.getLogger("arcadia.events")
 
@@ -36,12 +36,15 @@ def _now() -> datetime:
 async def handle_event(evt: SimEvent, farm_id: str | None) -> None:
     kind = evt.kind
     try:
-        if kind == "section_observed":
-            await _section_observed(evt, farm_id)
-        elif kind in ("seeded", "weeded", "harvested"):
-            await _section_worked(evt, farm_id)
-        elif kind == "harvest_result":
-            await _harvest_result(evt, farm_id)
+        if kind == "section_seen":
+            from app.services.world_engine import world
+            await world.on_section_seen(evt.payload.get("section") or evt.section or "", evt.robot_id)
+            return  # high-rate: the measurement itself is pushed by the world engine
+        elif kind in ("seeded", "fertilised", "weeded", "sprayed", "harvested"):
+            from app.services.world_engine import world
+            res = await world.on_work_event(kind, evt.payload.get("section") or evt.section or "", evt.robot_id, evt.mission_id)
+            if res:
+                evt.payload.update({"kg": res[0]["kg"], "was": res[0]["was"]})
         elif kind == "mission_started":
             await _mission_status(evt, "running")
         elif kind == "mission_complete":
@@ -98,85 +101,6 @@ async def _robot_online(evt: SimEvent) -> None:
                              battery_pct=float(evt.payload.get("battery_pct", 100.0)), **pose)
     await fleet.publish_dashboard({"t": "incident_resolved", "robot_id": evt.robot_id})
     log.info("robot %s online (%s)", evt.robot_id, evt.payload.get("type"))
-
-
-async def _apply_section(farm_id: str, section_id: str, values: dict) -> tuple[FieldSection | None, str | None]:
-    """Update a bed section. Returns (section after the update, its state before it)."""
-    async with session_scope() as s:
-        sec = (await s.execute(select(FieldSection).where(FieldSection.farm_id == farm_id, FieldSection.id == section_id))).scalar_one_or_none()
-        if sec is None:
-            return None, None
-        before = sec.state
-        for k, v in values.items():
-            setattr(sec, k, v)
-        await s.flush()
-        s.expunge(sec)
-        return sec, before
-
-
-async def _section_observed(evt: SimEvent, farm_id: str | None) -> None:
-    sid = evt.payload.get("section")
-    if not sid or not farm_id:
-        return
-    p = evt.payload
-    values: dict = {"last_survey_at": _now()}
-    for src, dst in (("state", "state"), ("weeds", "weeds"), ("moisture", "moisture"), ("soil_moisture", "moisture"), ("health", "health")):
-        if src in p:
-            values[dst] = p[src]
-    sec, _ = await _apply_section(farm_id, sid, values)
-    if sec is not None:
-        await fleet.publish_dashboard({"t": "section", "id": sid, "state": sec.state, "weeds": sec.weeds,
-                                       "moisture": sec.moisture, "health": sec.health, "surveyed": True})
-
-
-async def _section_worked(evt: SimEvent, farm_id: str | None) -> None:
-    sid = evt.payload.get("section")
-    if not sid or not farm_id:
-        return
-    values: dict = {}
-    if evt.kind == "seeded":
-        values = {"state": "seeded"}
-    elif evt.kind == "weeded":
-        values = {"weeds": False, "health": min(1.0, float(evt.payload.get("health", 1.0)))}
-    elif evt.kind == "harvested":
-        values = {"state": "harvested"}
-    sec, _ = await _apply_section(farm_id, sid, values)
-    if sec is None:
-        return
-    msg = {"t": "section", "id": sid, "state": sec.state, "weeds": sec.weeds, "moisture": sec.moisture, "health": sec.health}
-    if evt.kind == "harvested" and "was" in evt.payload:  # the headless twin is its own ground truth
-        msg.update(await _record_yield(farm_id, sec, evt.payload, evt.robot_id))
-    await fleet.publish_dashboard(msg)
-
-
-async def _harvest_result(evt: SimEvent, farm_id: str | None) -> None:
-    """Webots supervisor ground truth for a harvest pass: what state the crop was really in."""
-    sid = evt.payload.get("section")
-    if not sid or not farm_id:
-        return
-    async with session_scope() as s:
-        sec = (await s.execute(select(FieldSection).where(FieldSection.farm_id == farm_id, FieldSection.id == sid))).scalar_one_or_none()
-        if sec is None:
-            return
-        s.expunge(sec)
-    out = await _record_yield(farm_id, sec, evt.payload, evt.robot_id)
-    await fleet.publish_dashboard({"t": "section", "id": sid, **out})
-
-
-async def _record_yield(farm_id: str, sec: FieldSection, p: dict, robot_id: str | None) -> dict:
-    """Only a ripe crop yields; an early cut (operator override) clears the bed for nothing."""
-    was = p.get("was")
-    if was != "ripe":
-        kg = 0.0
-    elif p.get("kg") is not None:
-        kg = float(p["kg"])
-    else:
-        kg = round(YIELD_KG_M2.get(sec.crop, 0.8) * sec.length * sec.width, 1)
-    if kg > 0:
-        async with session_scope() as s:
-            s.add(YieldRecord(farm_id=farm_id, section_id=sec.id, crop_type=sec.crop, kg=kg, robot_id=robot_id))
-    log.info("harvest of %s (%s): crop was %s -> %.1f kg", sec.id, sec.crop, was, kg)
-    return {"was": was, "kg": kg}
 
 
 async def _mission_status(evt: SimEvent, status: str) -> None:

@@ -1,43 +1,64 @@
-/** Mission-control shell: left navigation rail + thin status bar. */
-import { Activity, AlertTriangle, BarChart3, Box, Map as MapIcon, Radar, Radio, Satellite, Gauge, Database } from 'lucide-react'
+/** Mission-control shell: left navigation rail + status bar with the simulation clock. */
+import { useEffect, useState } from 'react'
+import { Activity, AlertTriangle, BarChart3, Box, Database, Gauge, Globe2, Map as MapIcon, Radar, Radio, Satellite } from 'lucide-react'
 import { clsx } from 'clsx'
 import { useLive } from '../store/live'
 import { useUI, type View } from '../store/ui'
+import { useWorld } from '../store/world'
+import { WorldClock } from '../views/WorldView'
 import { Dot } from './ui'
 
 const VIEWS: { id: View; label: string; icon: typeof MapIcon; key: string }[] = [
-  { id: 'plan', label: 'Plan', icon: MapIcon, key: '1' },
-  { id: 'ops', label: 'Operations', icon: Radar, key: '2' },
-  { id: 'twin', label: '3D Twin', icon: Box, key: '3' },
-  { id: 'alerts', label: 'Alerts', icon: AlertTriangle, key: '4' },
-  { id: 'analytics', label: 'Analytics', icon: BarChart3, key: '5' },
+  { id: 'plan', label: 'Farm', icon: MapIcon, key: '1' },
+  { id: 'world', label: 'World', icon: Globe2, key: '2' },
+  { id: 'ops', label: 'Operations', icon: Radar, key: '3' },
+  { id: 'twin', label: '3D Twin', icon: Box, key: '4' },
+  { id: 'alerts', label: 'Alerts', icon: AlertTriangle, key: '5' },
+  { id: 'analytics', label: 'Analytics', icon: BarChart3, key: '6' },
 ]
+export const VIEW_KEYS = Object.fromEntries(VIEWS.map((v) => [v.key, v.id])) as Record<string, View>
+
+export function Logo({ size = 28 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 64 64" aria-hidden>
+      <rect x="4" y="4" width="56" height="56" rx="16" fill="#12201a" stroke="#2fa864" strokeWidth="2" />
+      {[0, 1, 2, 3].map((i) => <rect key={i} x={14 + i * 9.5} y="16" width="5" height="32" rx="2.5" fill={i === 1 ? '#e2b44a' : '#5fd68e'} opacity={0.55 + i * 0.12} transform={`rotate(-18 32 32)`} />)}
+    </svg>
+  )
+}
 
 export function NavRail() {
   const { view, setView, farms, farm, setFarm } = useUI()
   const incidents = useLive((s) => s.incidents.filter((i) => i.state !== 'resolved').length)
+  const anomalies = useWorld((s) => s.anomalies.length)
   const live = farms.find((f) => f.status === 'active') ?? (farm?.status === 'active' ? farm : null)
   const disabled = (v: View) => v !== 'plan' && !live
   // Operational views always show the live twin, even if a draft farm is open in the planner.
   const go = (v: View) => { if (v !== 'plan' && live && farm?.id !== live.id) setFarm(live); setView(v) }
   return (
-    <nav className="flex w-[72px] shrink-0 flex-col items-center border-r border-line bg-panel py-3">
-      <div className="mb-4 flex flex-col items-center gap-1">
-        <svg width="28" height="28" viewBox="0 0 64 64"><polygon points="32,4 56,18 56,46 32,60 8,46 8,18" fill="none" stroke="#7CE38B" strokeWidth="4" /><polygon points="32,18 44,25 44,39 32,46 20,39 20,25" fill="#7CE38B" /></svg>
-        <span className="text-[9px] font-bold tracking-[0.22em]">ARCADIA</span>
+    <nav aria-label="Views" className="flex w-[76px] shrink-0 flex-col items-center border-r border-line bg-panel py-3">
+      <div className="mb-5 flex flex-col items-center gap-1.5">
+        <Logo />
+        <span className="text-[9px] font-semibold tracking-[0.24em] text-fg-2">ARCADIA</span>
       </div>
-      {VIEWS.map(({ id, label, icon: Icon, key }) => (
-        <button key={id} onClick={() => go(id)} disabled={disabled(id)} title={`${label} (${key})`}
-          className={clsx('relative mb-1 flex w-16 flex-col items-center gap-1 rounded-lg px-1 py-2 text-[10px] transition-colors disabled:opacity-30',
-            view === id ? 'bg-leaf-2/15 text-leaf' : 'text-fg-3 hover:bg-line hover:text-fg')}>
-          <Icon size={18} />{label}
-          {id === 'alerts' && incidents > 0 && <span className="absolute right-2 top-1.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-alert px-1 text-[9px] font-bold text-white">{incidents}</span>}
-        </button>
-      ))}
-      <div className="mt-auto flex flex-col items-center gap-2 text-fg-3"><span className="kbd">1-5</span></div>
+      {VIEWS.map(({ id, label, icon: Icon, key }) => {
+        const badge = id === 'alerts' ? incidents + anomalies : 0
+        return (
+          <button key={id} onClick={() => go(id)} disabled={disabled(id)} title={`${label} (${key})`} aria-current={view === id ? 'page' : undefined}
+            className={clsx('relative mb-1 flex w-[64px] cursor-pointer flex-col items-center gap-1 rounded-xl px-1 py-2.5 text-[10px] font-medium transition-colors duration-200 disabled:cursor-not-allowed disabled:opacity-30',
+              view === id ? 'bg-leaf-2/15 text-leaf' : 'text-fg-3 hover:bg-line/70 hover:text-fg')}>
+            {view === id && <span className="absolute -left-1.5 top-1/2 h-6 w-1 -translate-y-1/2 rounded-r bg-leaf" />}
+            <Icon size={18} strokeWidth={1.8} />{label}
+            {badge > 0 && <span className="num absolute right-1.5 top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-alert px-1 text-[9px] font-bold text-white">{badge}</span>}
+          </button>
+        )
+      })}
+      <div className="mt-auto flex flex-col items-center gap-2 text-fg-3"><span className="kbd">1-6</span></div>
     </nav>
   )
 }
+
+const TITLES: Record<View, string> = { plan: 'Farm setup', world: 'World model', ops: 'Field operations', twin: 'Physics twin', alerts: 'Alerts & risk', analytics: 'Analytics' }
 
 export function StatusBar({ fps }: { fps: number }) {
   const connected = useLive((s) => s.connected)
@@ -46,28 +67,31 @@ export function StatusBar({ fps }: { fps: number }) {
   const fleet = useLive((s) => s.fleet)
   const { farm, view } = useUI()
   const active = Object.values(fleet).filter((r) => r.active).length
-  const bridgeTone = bridge?.ros_connected ? '#7ce38b' : bridge?.mode === 'headless' ? '#f5c451' : '#ff4d5e'
-  const title = { plan: 'Spatial planning', ops: 'Field operations', twin: 'Physics twin', alerts: 'Maintenance & chaos', analytics: 'Energy & yield analytics' }[view]
+  const bridgeTone = bridge?.ros_connected ? 'var(--color-leaf)' : bridge?.mode === 'headless' ? 'var(--color-sun)' : 'var(--color-alert)'
   return (
-    <header className="flex h-11 items-center gap-4 border-b border-line bg-panel px-4 text-[11px] text-fg-2">
-      <div className="flex items-center gap-2"><span className="text-sm font-semibold text-fg">{title}</span>
-        {farm && <span className="text-fg-3">· {farm.name} <span className={clsx('chip ml-1', farm.status === 'active' ? 'bg-leaf-2/20 text-leaf' : 'bg-line text-fg-2')}>{farm.status}</span></span>}</div>
-      <div className="ml-auto flex items-center gap-4">
-        <span className="flex items-center gap-1.5" title="Dashboard WebSocket"><Dot color={connected ? '#7ce38b' : '#ff4d5e'} pulse={connected} />link</span>
-        <span className="flex items-center gap-1.5" title={`Bridge: ${bridge?.mode ?? '—'}`}><Radio size={12} style={{ color: bridgeTone }} /><span className="mono">{bridge?.ros_connected ? 'ROS 2 · Webots' : bridge?.mode === 'headless' ? 'headless twin' : bridge?.mode ?? '—'}</span></span>
-        <span className="mono flex items-center gap-1.5" title="telemetry frames/s"><Satellite size={12} className="text-sky" />{rate} Hz</span>
-        <span className="mono flex items-center gap-1.5" title="units active / cap"><Activity size={12} className="text-leaf" />{active}/2</span>
-        {(view === 'ops' || view === 'plan') && <span className="mono flex items-center gap-1.5" title="canvas fps"><Gauge size={12} className={fps >= 55 ? 'text-leaf' : fps >= 30 ? 'text-sun' : 'text-alert'} />{fps}</span>}
-        <span className="mono flex items-center gap-1.5" title="telemetry rows ingested this session"><Database size={12} className="text-fg-3" />{bridge?.telemetry ?? 0}</span>
-        <Clock />
+    <header className="flex h-12 items-center gap-4 border-b border-line bg-panel px-4 text-[11px] text-fg-2">
+      <div className="flex min-w-0 items-center gap-2">
+        <h1 className="whitespace-nowrap text-sm font-semibold text-fg">{TITLES[view]}</h1>
+        {farm && <span className="hidden truncate text-fg-3 lg:inline">· {farm.name}</span>}
+        {farm && <span className={clsx('chip', farm.status === 'active' ? 'bg-leaf-2/20 text-leaf' : 'bg-line text-fg-2')}>{farm.status}</span>}
+      </div>
+      <div className="ml-auto flex shrink-0 items-center gap-3 whitespace-nowrap xl:gap-4">
+        <WorldClock />
+        <span className="h-4 w-px bg-line" />
+        <span className="flex items-center gap-1.5" title="Dashboard link"><Dot color={connected ? 'var(--color-leaf)' : 'var(--color-alert)'} pulse={connected} />link</span>
+        <span className="flex items-center gap-1.5" title={`Simulation bridge: ${bridge?.mode ?? '—'}`}><Radio size={12} style={{ color: bridgeTone }} /><span className="mono hidden lg:inline">{bridge?.ros_connected ? 'ROS 2 · Webots' : bridge?.mode === 'headless' ? 'headless twin' : bridge?.mode ?? '—'}</span></span>
+        <span className="mono hidden items-center gap-1.5 md:flex" title="telemetry frames/s"><Satellite size={12} className="text-sky" />{rate} Hz</span>
+        <span className="mono hidden items-center gap-1.5 md:flex" title="robots active / cap"><Activity size={12} className="text-leaf" />{active}/2</span>
+        {(view === 'ops' || view === 'plan') && <span className="mono hidden items-center gap-1.5 lg:flex" title="map fps"><Gauge size={12} className={fps >= 55 ? 'text-leaf' : fps >= 30 ? 'text-sun' : 'text-alert'} />{fps}</span>}
+        <span className="mono hidden items-center gap-1.5 xl:flex" title="telemetry rows this session"><Database size={12} className="text-fg-3" />{bridge?.telemetry ?? 0}</span>
+        <span className="hidden xl:inline"><WallClock /></span>
       </div>
     </header>
   )
 }
 
-import { useEffect, useState } from 'react'
-function Clock() {
+function WallClock() {
   const [t, setT] = useState(new Date())
   useEffect(() => { const id = setInterval(() => setT(new Date()), 1000); return () => clearInterval(id) }, [])
-  return <span className="mono text-fg-3">{t.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</span>
+  return <span className="mono text-fg-3" title="wall clock">{t.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
 }

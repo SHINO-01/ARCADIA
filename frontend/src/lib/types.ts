@@ -35,6 +35,7 @@ export interface Farm {
   area_m2: number
   status: 'mapped' | 'planned' | 'active' | 'archived'
   plan: PlanReport | null
+  crop_plan?: { crop?: string; rotation_crop?: string | null; sections?: Record<string, string>; start_date?: string } | null
   seed: number
   created_at: string
 }
@@ -116,7 +117,7 @@ export const INFRA_COLOR: Record<string, string> = { solar_dock: '#f5c451', wind
 export const TRACK_COLOR: Record<string, string> = { headland: '#b39b78', alley: '#b39b78', spur: '#a7a39a', lane: '#8f7a5c' }
 export const TRACK_LABEL: Record<string, string> = { headland: 'Headland (turning track)', alley: 'Farm track / cross alley', spur: 'Yard spur', lane: 'Tramline (wheel lane)' }
 export const INFRA_LABEL: Record<string, string> = { solar_dock: 'Solar charging dock', wind_dock: 'Wind charging dock', storage: 'Robot storage', repair_station: 'Repair station', road: 'Travel road' }
-export const CROP_COLORS: Record<string, string> = { wheat: '#e2c27a', maize: '#f0a742', soy: '#8fd17a', tomato: '#ff6b5e', lettuce: '#5fd7a0' }
+export const CROP_COLORS: Record<string, string> = { wheat: '#e2c27a', maize: '#f0a742', soybean: '#8fd17a', soy: '#8fd17a', tomato: '#ff6b5e', lettuce: '#5fd7a0' }
 
 export const STATUS_COLOR: Record<string, string> = {
   idle: '#a3b8aa', active: '#7ce38b', returning: '#5cc8ff', charging: '#f5c451', fault: '#ff9f6b', stranded: '#ff4d5e',

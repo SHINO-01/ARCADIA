@@ -111,7 +111,9 @@ class PlanReport:
                        "alleys": sum(1 for t in L.tracks if t.kind == "alley"),
                        "hazards": len(L.hazards), "field_area_m2": round(L.field_area_m2, 1),
                        "crop_area_m2": round(L.crop_area_m2, 1), "track_length_m": round(L.track_length_m, 1),
-                       "cropped_pct": round(100 * L.crop_area_m2 / max(L.field_area_m2, 1.0), 1)},
+                       "cropped_pct": round(100 * L.crop_area_m2 / max(L.field_area_m2, 1.0), 1),
+                       "zones": L.zones, "roads_used": L.roads_used, "obstacles_excluded": L.obstacles_excluded,
+                       "baseline": L.baseline, "adaptive": L.params.orientation == "auto"},
         }
 
 
@@ -142,13 +144,24 @@ def _insert_vertex(track: Track, pt: list[float]) -> None:
 
 
 def plan_infrastructure(fld: Field, k_docks: int | None = None, k_storage: int | None = None, seed: int = 42,
-                        params: LayoutParams | None = None) -> PlanReport:
+                        params: LayoutParams | None = None, setup: dict | None = None) -> PlanReport:
+    """setup: farm.setup (imagery roads/obstacles, soil base) - optional; enables the adaptive layout."""
     origin: Origin = fld.origin
     params = params or LayoutParams(seed=seed)
     field_xy = fld.polygon_xy if fld.boundary_lnglat else None
     if field_xy is None or field_xy.is_empty:
         raise ValueError("farm has no boundary")
-    layout = generate_layout(field_xy, params)
+    setup = setup or {}
+    img = setup.get("imagery") or {}
+    roads = [r for r in img.get("roads", []) if r.get("confidence", 1) >= 0.2]
+    obstacles = [o for o in img.get("obstacles", []) if o.get("inside")]
+    pot = None
+    if setup.get("soil_base"):
+        from app.agro.soil import SoilField, productivity
+        from app.services.layout import Potential
+        sf = SoilField(field_xy, [], [], seed=seed, base=setup["soil_base"])
+        pot = Potential(productivity(sf), sf.origin_xy, sf.cell)
+    layout = generate_layout(field_xy, params, roads=roads, obstacles=obstacles, potential=pot)
     secs = layout.sections
     if not secs:
         raise ValueError("no crop beds fit - reduce headland/bed width or draw a larger field")
@@ -194,6 +207,13 @@ def plan_infrastructure(fld: Field, k_docks: int | None = None, k_storage: int |
     storage: list[PlannedSite] = []
     targets = [(dock_xy * dw[:, None]).sum(axis=0) / dw.sum()] if (k_storage == 1 or len(docks) == 1) else \
         list(kmeans(dock_xy, k_storage, seed=seed + 1, weights=dw).centroids)
+    # storage (the farm yard) next to an existing road when the imagery found one: lorries reach it
+    outside_roads = [LineString(t.coords) for t in layout.tracks if t.kind == "road"]
+    outside_roads = [r for r in outside_roads if r.distance(field_xy.buffer(-1)) > 0 or not field_xy.buffer(-1).contains(r)]
+    if outside_roads:
+        best_road = min(outside_roads, key=lambda r: r.distance(Point(*targets[0])))
+        from shapely.ops import nearest_points
+        targets[0] = np.array(nearest_points(ring, best_road)[0].coords[0])
     for i, t in enumerate(targets):
         jn, pad = place(tuple(t))
         storage.append(site(f"storage-{i + 1}", "storage", jn, pad))
@@ -205,6 +225,12 @@ def plan_infrastructure(fld: Field, k_docks: int | None = None, k_storage: int |
     for s in docks + storage + repair:  # yard spurs join the network at an exact headland vertex
         _insert_vertex(head, s.access)
         layout.tracks.append(Track(id=f"spur-{s.slug}", kind="spur", width=4.0, coords=[s.access, [s.x, s.y]]))
+    if outside_roads:  # yard gate: storage pad to the public road
+        st = storage[0]
+        road = min(outside_roads, key=lambda r: r.distance(Point(st.x, st.y)))
+        q = road.interpolate(road.project(Point(st.x, st.y)))
+        if q.distance(Point(st.x, st.y)) < 120:
+            layout.tracks.append(Track(id="spur-gate", kind="spur", width=4.0, coords=[[st.x, st.y], [round(q.x, 3), round(q.y, 3)]]))
     layout.track_length_m += sum(math.dist(s.access, (s.x, s.y)) for s in docks + storage + repair)
 
     # travel latency on the tracks (sampled) from each section's nearest work pass to its nearest dock

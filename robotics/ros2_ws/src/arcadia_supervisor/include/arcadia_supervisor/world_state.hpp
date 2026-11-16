@@ -1,6 +1,6 @@
 #pragma once
-// Shared state for the ARCADIA Webots supervisor: the parsed world config, the spawned nodes,
-// and crop ground truth (which the backend only learns about via observations).
+// Shared state for the ARCADIA Webots supervisor: the parsed world config and the spawned nodes.
+// Crop ground truth lives in the backend's agronomic world model; the supervisor renders it.
 #include <map>
 #include <memory>
 #include <string>
@@ -25,9 +25,8 @@ struct Section {
   CropState state = CropState::Fallow;
   bool weeds = false;
   double moisture = 0.5;
-  double health = 1.0;
-  double t_state = 0.0;
-  std::string observed_sig;
+  double vis_h = 0.05;                // rendered crop height (m), from the world model
+  double seen_t = -1e9;               // last time the scout UAV had it in view (mock CV cooldown)
   webots::Node *node = nullptr;       // bed / crop box
   webots::Node *weed_node = nullptr;  // weed marker above the bed, hidden when clean
 };

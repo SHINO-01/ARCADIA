@@ -24,7 +24,7 @@ message(STATUS "Using Webots at ${WEBOTS_HOME}")
 # Resolve the snap symlink to a stable revision path so the RPATH keeps working.
 get_filename_component(WEBOTS_HOME_REAL "${WEBOTS_HOME}" REALPATH)
 
-add_executable(supervisor src/supervisor.cpp src/world_spawner.cpp src/ground_truth.cpp)
+add_executable(supervisor src/supervisor.cpp src/world_spawner.cpp src/mock_vision.cpp)
 target_include_directories(supervisor PRIVATE
   include
   ${WEBOTS_HOME_REAL}/include/controller/cpp

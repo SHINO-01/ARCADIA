@@ -4,6 +4,7 @@
  * Altara canvas renderer at 60fps; only coarse state (status, battery) touches React.
  */
 import { create } from 'zustand'
+import { useWorld } from './world'
 import type { BridgeStatus, DockReading, FeedEvent, Incident, Mission, Robot, TelemetryFrame } from '../lib/types'
 
 export interface TrackPoint { x: number; y: number; lat: number; lng: number; t: number }
@@ -122,11 +123,24 @@ export const useLive = create<LiveState>((set, get) => ({
             sectionOverrides.set(id, { ...(sectionOverrides.get(id) ?? {}), ...rest })
             cellVersion++
             set({ cellVersion })
+            if (m.op === 'harvest' && m.kg) pushFeed({ kind: 'harvested', robot_id: m.by ?? null, section: id, severity: 'INFO', payload: { kg: m.kg, was: m.was } })
             break
           }
+          case 'sections': {
+            for (const it of m.items as Record<string, unknown>[]) {
+              const { t: _t, id, ...rest } = it
+              sectionOverrides.set(id as string, { ...(sectionOverrides.get(id as string) ?? {}), ...rest })
+            }
+            cellVersion++
+            set({ cellVersion })
+            useWorld.getState().apply(m)
+            break
+          }
+          case 'world': case 'world_day': case 'forecast': case 'analysis': useWorld.getState().apply(m); break
+          case 'anomaly': pushFeed({ kind: 'anomaly', robot_id: null, severity: m.anomaly.severity === 'critical' ? 'ERROR' : 'WARN', payload: { title: m.anomaly.title } }); break
           case 'event': {
             const e = m.event
-            if (e.kind !== 'section_observed') pushFeed({ kind: e.kind, robot_id: e.robot_id, section: e.section, severity: e.severity, payload: e.payload ?? {} })
+            if (e.kind !== 'section_observed' && e.kind !== 'section_seen') pushFeed({ kind: e.kind, robot_id: e.robot_id, section: e.section, severity: e.severity, payload: e.payload ?? {} })
             break
           }
           case 'mission': set((s) => {

@@ -178,6 +178,7 @@ void WorldSpawner::spawnFieldLayout(const json &cfg, World &world) {
     sec.state = stateFrom(c.value("state", "fallow"));
     Rgb col = cropColour(sec.crop, sec.state);
     double hgt = stateHeight(sec.crop_height, sec.state);
+    sec.vis_h = hgt;
     // a 0.3 m gap between consecutive sections makes the management units readable
     beds << " Solid { translation " << f(sec.x) << " " << f(sec.y) << " " << f(hgt / 2) << " rotation 0 0 1 " << f(sec.angle)
          << " name \"bed_" << sec.id << "\" children [ Shape { appearance PBRAppearance { baseColor " << f(col.r) << " " << f(col.g)
@@ -207,6 +208,7 @@ void WorldSpawner::setCropState(Section &c) {
   if (!c.node) return;
   Rgb col = cropColour(c.crop, c.state);
   double hgt = stateHeight(c.crop_height, c.state);
+  c.vis_h = hgt;
   webots::Node *shape = c.node->getField("children")->getMFNode(0);
   if (shape) {
     if (webots::Node *geo = shape->getField("geometry")->getSFNode()) {
@@ -223,10 +225,29 @@ void WorldSpawner::setCropState(Section &c) {
   if (c.weeds) setWeeds(c, true);  // keep the weed marker above the (re)grown crop
 }
 
+void WorldSpawner::setVisual(Section &c, double height, double r, double g, double b, bool weeds) {
+  if (!c.node) return;
+  c.vis_h = std::max(0.04, height);
+  webots::Node *shape = c.node->getField("children")->getMFNode(0);
+  if (shape) {
+    if (webots::Node *geo = shape->getField("geometry")->getSFNode()) {
+      const double size[3] = {std::max(0.5, c.length - 0.3), c.width, c.vis_h};
+      geo->getField("size")->setSFVec3f(size);
+    }
+    if (webots::Node *app = shape->getField("appearance")->getSFNode()) {
+      const double rgb[3] = {r, g, b};
+      app->getField("baseColor")->setSFColor(rgb);
+    }
+  }
+  const double tr[3] = {c.x, c.y, c.vis_h / 2};
+  c.node->getField("translation")->setSFVec3f(tr);
+  setWeeds(c, weeds);
+}
+
 void WorldSpawner::setWeeds(Section &c, bool on) {
   c.weeds = on;
   if (!c.weed_node) return;
-  const double top = stateHeight(c.crop_height, c.state);
+  const double top = c.vis_h;
   const double tr[3] = {c.x, c.y, on ? top + 0.6 : -2.0};
   c.weed_node->getField("translation")->setSFVec3f(tr);
 }

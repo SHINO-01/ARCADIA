@@ -24,10 +24,9 @@ event concerns (empty if none).
 |---|---|---|---|
 | `world_loaded` | supervisor / twin | `{sections, source}` | log |
 | `robot_online` | robot controller at boot | `{type, active, battery_pct, x, y}` | fail its in-flight missions, resolve its incidents, reset to idle at the reported position |
-| `section_observed` | supervisor (UAV within `sensor_radius_m` + half a section) | `{section, state, weeds, moisture, health}` | update `sections`, push `section` to dashboards (mock multispectral CV) |
+| `section_seen` | supervisor / twin (UAV within `sensor_radius_m` + half a section; 20 s cooldown per section) | `{section, distance_m?, altitude_m?}` | the world model turns it into a noisy multispectral measurement (NDVI, CWSI, weeds, disease, yield estimate) stored on `sections` and pushed as `section` |
 | `mission_started` / `mission_complete` / `mission_failed` | robot | `{kind, reason?, kg?, section?, sections_observed?}` | mission lifecycle, robot status |
-| `seeded` / `weeded` / `harvested` | robot (end of the work pass) | `{section, crop, kg?, was?}` | section state; the supervisor mutates the crop ground truth. The headless twin adds `was`/`kg` and a `yields` row is written when `was` is `ripe` |
-| `harvest_result` | supervisor (on `harvested`) | `{section, crop, was, area_m2}` | ground truth of the cut: a `yields` row only when the crop `was` ripe |
+| `seeded` / `fertilised` / `weeded` / `sprayed` / `harvested` | robot (end of the work pass) | `{section, crop}` | the world model applies the operation to the field truth; a harvest books a `yields` row only for crop that was ripe (`kg`, `was` added to the event) |
 | `fault_detected` | robot | `{fault, params, x, y, battery_pct, ...}` | creates an `incidents` row (ERROR → requires tow for `motor_jam`/`battery_drop`), interruptive modal |
 | `fault_cleared` | robot | `{recharged}` | incident resolved, robot idle/charging |
 | `tow_attached` / `tow_complete` | AGV | `{target}` | towed status; on complete the backend issues `clear_fault{recharge:true}` |
@@ -46,6 +45,9 @@ event concerns (empty if none).
 | `clear_fault` | `{recharge}` | robot; supervisor re-parks it at the dock when recharging |
 | `set_active` | `{active}` | robot (AGV power up/down) and supervisor (park) |
 | `set_irradiance` | `{irradiance, sim_hour}` | robots (passive solar skins) — broadcast by the supervisor every 5 s |
+| `field_state` | `{s: {section: [height_m, r, g, b, weeds]}}` (deltas, every 2 s) | supervisor paints the world model's crop |
+| `weather` | `{sun_elev, sun_az, light, sky, luminosity, fog_m, wet_tracks, hour}` (every 5 s) | supervisor sun/sky/haze; twin + supervisor bog vehicles down only on wet tracks |
+| `set_irradiance` (broadcast) | `{irradiance, sim_hour}` | robots' solar skins |
 | `pause` / `resume` / `set_speed` | `{factor?}` | headless twin only |
 
 ## Backend fan-out (`/ws/telemetry`)

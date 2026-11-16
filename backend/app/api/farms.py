@@ -10,7 +10,7 @@ from app.bridge.manager import bridge
 from app.core.db import get_session
 from app.core.redis import get_redis
 from app.models import Farm, FieldSection, Incident, Infrastructure, Mission, Robot
-from app.schemas import FarmCreate, FarmOut, InfrastructureOut, PlanRequest
+from app.schemas import CropPlanRequest, FarmCreate, FarmOut, InfrastructureOut, PlanRequest
 from app.services import fleet
 from app.services.field import MAX_FIELD_AREA_M2, field_from_geojson, field_of_farm
 from app.services.geo import Origin
@@ -55,6 +55,8 @@ async def delete_farm(farm_id: str, s: AsyncSession = Depends(get_session)):
     if await fleet.get_active_farm_id() == farm_id:
         await fleet.set_active_farm_id(None)
         await fleet.set_fleet([])
+        from app.services.world_engine import world as world_engine
+        await world_engine.load(None)
     await s.execute(delete(Robot).where(Robot.farm_id == farm_id))
     await s.delete(farm)
     await s.commit()
@@ -73,11 +75,14 @@ async def plan_farm(farm_id: str, body: PlanRequest, s: AsyncSession = Depends(g
     farm = await get_farm_or_404(s, farm_id)
     fld = field_of_farm(farm)
     seed = body.seed if body.seed is not None else farm.seed
+    plan_c = farm.crop_plan or {}
     params = LayoutParams(bed_width=body.bed_width, lane_width=body.lane_width, headland_width=body.headland_width,
                           section_length=body.section_length, alley_spacing=body.alley_spacing, orientation=body.orientation,
-                          shuffle_crops=body.shuffle_crops, seed=seed)
+                          shuffle_crops=body.shuffle_crops, seed=seed, use_roads=body.use_roads,
+                          crop=plan_c.get("crop", "maize"), rotation_crop=plan_c.get("rotation_crop") or "")
+    import asyncio as _asyncio
     try:
-        report = plan_infrastructure(fld, body.k_docks, body.k_storage, seed, params=params)
+        report = await _asyncio.to_thread(plan_infrastructure, fld, body.k_docks, body.k_storage, seed, params, farm.setup)
     except ValueError as e:
         raise HTTPException(422, str(e)) from e
     await s.execute(delete(Infrastructure).where(Infrastructure.farm_id == farm_id))
@@ -97,12 +102,124 @@ async def plan_farm(farm_id: str, body: PlanRequest, s: AsyncSession = Depends(g
                              meta={"access": site.access}))
     farm.plan = report.to_dict()
     farm.world_config = world
+    if farm.crop_plan:  # section ids changed with the new layout
+        farm.crop_plan = {**farm.crop_plan, "sections": {sec.id: sec.crop for sec in report.layout.sections}}
     farm.status = "planned" if farm.status != "active" else "active"
     await s.commit()
     await s.refresh(farm)
     if farm.status == "active":  # re-planning a live farm: push the new world to the sim
         await bridge.activate_farm(farm, await _robots_state(s, farm))
+        from app.services.world_engine import world as world_engine
+        await world_engine.load(farm.id, fresh=True)  # new beds: a new season
     return farm
+
+
+# ----------------------------------------------------------------------------- site analysis & crops
+@router.post("/{farm_id}/analyze")
+async def analyze(farm_id: str, s: AsyncSession = Depends(get_session)):
+    """Start the site analysis (satellite imagery, ERA5 climate, SoilGrids soil) in the background."""
+    await get_farm_or_404(s, farm_id)
+    import asyncio as _asyncio
+
+    from app.services import site_analysis
+    _asyncio.create_task(site_analysis.run(farm_id))
+    return {"started": True}
+
+
+@router.get("/{farm_id}/analysis")
+async def analysis(farm_id: str, s: AsyncSession = Depends(get_session)):
+    farm = await get_farm_or_404(s, farm_id)
+    from app.services import site_analysis
+    st = await site_analysis.status(farm_id)
+    setup = farm.setup or {}
+    img = setup.get("imagery") or {}
+    out = {"status": st, "analysed": bool(setup.get("climate"))}
+    if setup.get("climate"):
+        c = setup["climate"]
+        out["climate"] = {"source": c["source"], "years": c.get("years"), "elevation": c.get("elevation"),
+                          "annual_rain_mm": round(c["clim"]["annual_rain_mm"]), "annual_tmean": round(c["clim"]["annual_tmean"], 1),
+                          "monthly_rain_prob": [round(x, 2) for x in c["p01"]]}
+    if setup.get("soil_base"):
+        out["soil"] = setup["soil_base"]
+    if img:
+        out["imagery"] = {k: img.get(k) for k in ("source", "zoom", "gsd_m", "size_px", "veg_cover_pct", "preview_corners", "error")}
+        out["imagery"]["roads"] = [{k: r[k] for k in ("lnglat", "width_m", "length_m", "confidence", "inside", "distance_m")} for r in img.get("roads", [])]
+        out["imagery"]["obstacles"] = [{k: o[k] for k in ("kind", "lnglat", "area_m2", "inside")} for o in img.get("obstacles", [])]
+    return out
+
+
+@router.get("/{farm_id}/imagery.jpg")
+async def imagery_preview(farm_id: str, s: AsyncSession = Depends(get_session)):
+    farm = await get_farm_or_404(s, farm_id)
+    jpg = ((farm.setup or {}).get("imagery") or {}).get("preview_jpg")
+    if not jpg:
+        raise HTTPException(404, "no imagery analysis yet")
+    import base64
+
+    from fastapi.responses import Response
+    return Response(base64.b64decode(jpg), media_type="image/jpeg")
+
+
+@router.get("/{farm_id}/crops")
+async def crop_options(farm_id: str, refresh: bool = False, s: AsyncSession = Depends(get_session)):
+    """Monte Carlo season simulation of every catalogue crop on this farm's soils and climate."""
+    farm = await get_farm_or_404(s, farm_id)
+    setup = farm.setup or {}
+    if not setup.get("climate") or not farm.world_config:
+        raise HTTPException(409, "run the site analysis and plan the layout first")
+    if setup.get("crop_choice") and not refresh:
+        return setup["crop_choice"]
+    rows = (await s.execute(select(FieldSection).where(FieldSection.farm_id == farm_id))).scalars().all()
+    from datetime import date as _date
+
+    from app.agro.forecast import crop_choice
+    from app.services.world_engine import build_world
+    import asyncio as _asyncio
+    _, _, model, _ = build_world(farm, list(rows))
+    res = await _asyncio.to_thread(crop_choice, model, setup["climate"], _date.today(), 12, farm.seed)
+    farm.setup = {**setup, "crop_choice": res}
+    await s.commit()
+    return res
+
+
+@router.post("/{farm_id}/crop")
+async def set_crop(farm_id: str, body: CropPlanRequest, s: AsyncSession = Depends(get_session)):
+    """The season's crop (optionally a rotation block). Real farms grow one crop per field."""
+    from app.agro.crops import CROPS, CROP_HEIGHT_M_ALL
+    from app.agro.forecast import next_sowing
+    farm = await get_farm_or_404(s, farm_id)
+    if body.crop not in CROPS or (body.rotation_crop and body.rotation_crop not in CROPS):
+        raise HTTPException(422, f"crop must be one of {list(CROPS)}")
+    rows = (await s.execute(select(FieldSection).where(FieldSection.farm_id == farm_id))).scalars().all()
+    beds = sorted({r.bed_id for r in rows}, key=lambda b: (len(b), b))
+    second = set(beds[len(beds) // 2:]) if body.rotation_crop and body.rotation_crop != body.crop else set()
+    crop_of = {}
+    for r in rows:
+        r.crop = body.rotation_crop if r.bed_id in second else body.crop
+        crop_of[r.id] = r.crop
+    if farm.world_config:
+        wc = dict(farm.world_config)
+        wc["sections"] = [{**sec, "crop": crop_of.get(sec["id"], body.crop), "crop_height": CROP_HEIGHT_M_ALL[crop_of.get(sec["id"], body.crop)]}
+                          for sec in wc["sections"]]
+        farm.world_config = wc
+    start = body.start_date or max(_date_today(), next_sowing(body.crop, farm.centroid_lat, _date_today()) - _td(days=7)).isoformat()
+    farm.crop_plan = {"crop": body.crop, "rotation_crop": body.rotation_crop or None, "sections": crop_of, "start_date": start}
+    await s.commit()
+    await s.refresh(farm)
+    if farm.status == "active":  # a new crop plan starts a new season
+        from app.services.world_engine import world as world_engine
+        await world_engine.load(farm.id, fresh=True)
+    return {"crop_plan": farm.crop_plan}
+
+
+def _date_today():
+    from datetime import date as _date
+    return _date.today()
+
+
+def _td(**kw):
+    from datetime import timedelta
+    return timedelta(**kw)
 
 
 @router.get("/{farm_id}/layout")
@@ -120,8 +237,9 @@ async def get_layout(farm_id: str, s: AsyncSession = Depends(get_session)):
     for sec in secs:
         feats.append({"type": "Feature", "id": sec.id, "geometry": {"type": "Polygon", "coordinates": [to_ll(sec.polygon)]},
                       "properties": {"layer": "section", "id": sec.id, "bed": sec.bed_id, "crop": sec.crop, "state": sec.state,
-                                     "weeds": sec.weeds, "moisture": sec.moisture, "health": sec.health,
-                                     "surveyed": sec.last_survey_at is not None}})
+                                     "weeds": sec.weeds, "moisture": sec.moisture if sec.last_survey_at else None,
+                                     "health": sec.health if sec.last_survey_at else None, "surveyed": sec.last_survey_at is not None,
+                                     "ndvi": sec.ndvi, "cwsi": sec.cwsi, "disease": sec.disease, "yield_est": sec.yield_est, "soil": sec.soil}})
     order = {"headland": 0, "alley": 1, "spur": 2, "lane": 3}
     for t in sorted(farm.world_config["tracks"], key=lambda t: order.get(t["kind"], 9)):
         poly = LineString(t["coords"]).buffer(t["width"] / 2, cap_style=2, join_style=2)
@@ -152,6 +270,8 @@ async def reset_all(s: AsyncSession = Depends(get_session)):
     """Fresh session: delete every farm (sections, infrastructure, robots cascade) and clear live state."""
     await fleet.set_active_farm_id(None)
     await fleet.set_fleet([])
+    from app.services.world_engine import world as world_engine
+    await world_engine.load(None)
     await s.execute(delete(Robot))
     await s.execute(delete(Farm))
     await s.commit()
@@ -200,10 +320,16 @@ async def activate_farm(farm_id: str, s: AsyncSession = Depends(get_session)):
         robots_state.append({"id": r["id"], "type": r["type"], "name": r["name"], "status": "idle" if r["active"] else "offline",
                              "active": r["active"], "battery_pct": 100.0, "x": r["x"], "y": r["y"], "z": r["z"], "lat": lat,
                              "lng": lng, "heading": 0.0, "speed": 0.0, "home": r["home"], "spec": r["spec"]})
+    if not farm.crop_plan:  # default: the recommended (or default) crop, sown at its next window
+        from app.agro.crops import DEFAULT_CROP
+        rec = next((c["crop"] for c in (farm.setup or {}).get("crop_choice", []) if c.get("recommended")), DEFAULT_CROP)
+        farm.crop_plan = {"crop": rec, "rotation_crop": None, "sections": {sec["id"]: rec for sec in farm.world_config["sections"]}}
     farm.status = "active"
     await s.commit()
     await s.refresh(farm)
     await bridge.activate_farm(farm, robots_state)
+    from app.services.world_engine import world as world_engine
+    await world_engine.load(farm.id)
     return farm
 
 

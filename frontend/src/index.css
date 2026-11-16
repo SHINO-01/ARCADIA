@@ -1,24 +1,27 @@
 @import "tailwindcss";
 
 @theme {
-  --font-sans: "Instrument Sans", ui-sans-serif, system-ui, sans-serif;
-  --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, monospace;
+  --font-sans: "Fira Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "Fira Code", ui-monospace, SFMono-Regular, monospace;
 
-  --color-bg: #0b1410;
-  --color-panel: #101b16;
-  --color-panel-2: #152219;
-  --color-line: #22332a;
-  --color-line-2: #2d4436;
-  --color-fg: #e6f0e9;
-  --color-fg-2: #a3b8aa;
-  --color-fg-3: #6b8273;
-  --color-leaf: #7ce38b;
-  --color-leaf-2: #3fb95a;
-  --color-sun: #f5c451;
-  --color-sky: #5cc8ff;
-  --color-rust: #ff7a59;
-  --color-alert: #ff4d5e;
-  --color-soil: #8a6a3d;
+  /* ARCADIA design system (design-system/arcadia/MASTER.md), dark operations theme:
+     earth green + harvest gold on deep field-green neutrals */
+  --color-bg: #0a0f0d;
+  --color-panel: #0f1714;
+  --color-panel-2: #141e1a;
+  --color-line: #1e2b25;
+  --color-line-2: #2b3c34;
+  --color-fg: #e8efe9;
+  --color-fg-2: #aab9af;
+  --color-fg-3: #72857a;
+  --color-leaf: #5fd68e;
+  --color-leaf-2: #2fa864;
+  --color-sun: #e2b44a;
+  --color-sky: #5fade8;
+  --color-rust: #e3825a;
+  --color-alert: #f06464;
+  --color-soil: #9b7c52;
+  --color-violet: #a48bf0;
 }
 
 :root { color-scheme: dark; }
@@ -28,25 +31,37 @@ body {
   background: var(--color-bg);
   color: var(--color-fg);
   font-family: var(--font-sans);
+  font-size: 14px;
   -webkit-font-smoothing: antialiased;
   overflow: hidden;
 }
-.mono { font-family: var(--font-mono); font-feature-settings: "tnum" 1; }
-.panel { background: var(--color-panel); border: 1px solid var(--color-line); border-radius: 10px; }
+.mono, .num { font-family: var(--font-mono); font-feature-settings: "tnum" 1, "zero" 1; }
+.panel {
+  background: linear-gradient(180deg, color-mix(in oklab, var(--color-panel) 92%, white 2%), var(--color-panel));
+  border: 1px solid var(--color-line); border-radius: 12px;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.025), 0 1px 2px rgba(0,0,0,.25);
+}
 .scroll { scrollbar-width: thin; scrollbar-color: var(--color-line-2) transparent; }
 .scroll::-webkit-scrollbar { width: 6px; height: 6px; }
 .scroll::-webkit-scrollbar-thumb { background: var(--color-line-2); border-radius: 3px; }
-.btn { @apply inline-flex items-center gap-1.5 rounded-md border border-line-2 bg-panel-2 px-2.5 py-1.5 text-xs font-medium text-fg hover:bg-line transition-colors disabled:opacity-40 disabled:cursor-not-allowed; }
-.btn-primary { @apply border-leaf-2 bg-leaf-2/20 text-leaf hover:bg-leaf-2/30; }
+.btn { @apply inline-flex cursor-pointer items-center justify-center gap-1.5 rounded-lg border border-line-2 bg-panel-2 px-3 py-1.5 text-xs font-medium text-fg transition-colors duration-200 hover:border-fg-3/50 hover:bg-line disabled:cursor-not-allowed disabled:opacity-40; }
+.btn-primary { @apply border-leaf-2/70 bg-leaf-2/20 text-leaf hover:bg-leaf-2/30; }
+.btn-solid { @apply border-leaf-2 bg-leaf-2 text-[#04140b] hover:bg-leaf; }
 .btn-danger { @apply border-alert/60 bg-alert/15 text-alert hover:bg-alert/25; }
-.chip { @apply inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide; }
+.btn-ghost { @apply border-transparent bg-transparent text-fg-2 hover:bg-line hover:text-fg; }
+.chip { @apply inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide; }
+.label { @apply text-[10px] font-medium uppercase tracking-[0.12em] text-fg-3; }
+.field { @apply w-full rounded-lg border border-line-2 bg-bg px-2.5 py-1.5 text-xs text-fg outline-none transition-colors placeholder:text-fg-3 focus:border-leaf-2; }
+:focus-visible { outline: 2px solid var(--color-leaf); outline-offset: 2px; border-radius: 6px; }
+input[type="range"] { accent-color: var(--color-leaf-2); }
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: 0ms !important; transition-duration: 0ms !important; } }
 .kbd { @apply font-mono rounded border border-line-2 bg-bg px-1 text-[10px] text-fg-2; }
 
 /* MapLibre / Draw theming */
 .maplibregl-ctrl-group { background: var(--color-panel) !important; border: 1px solid var(--color-line) !important; box-shadow: none !important; }
 .maplibregl-ctrl-group button { background-color: transparent !important; filter: invert(0.85) hue-rotate(90deg); }
 .maplibregl-ctrl-group button + button { border-top: 1px solid var(--color-line) !important; }
-.maplibregl-ctrl-attrib { background: rgba(11,20,16,.7) !important; color: var(--color-fg-3) !important; font-size: 10px !important; }
+.maplibregl-ctrl-attrib { background: rgba(10,15,13,.7) !important; color: var(--color-fg-3) !important; font-size: 10px !important; }
 .maplibregl-ctrl-attrib a { color: var(--color-fg-2) !important; }
 .maplibregl-popup-content { background: var(--color-panel) !important; color: var(--color-fg) !important; border: 1px solid var(--color-line-2); border-radius: 8px; font-size: 12px; padding: 8px 10px !important; }
 .maplibregl-popup-tip { border-top-color: var(--color-line-2) !important; }
@@ -56,3 +71,8 @@ body {
 @keyframes pulse-ring { 0% { transform: scale(.6); opacity: .9 } 100% { transform: scale(1.8); opacity: 0 } }
 @keyframes slide-up { from { transform: translateY(8px); opacity: 0 } to { transform: none; opacity: 1 } }
 .anim-slide-up { animation: slide-up .18s ease-out both; }
+
+@keyframes fade-in { from { opacity: 0 } to { opacity: 1 } }
+.anim-fade { animation: fade-in .25s ease-out both; }
+@keyframes shimmer { 0% { background-position: -200px 0 } 100% { background-position: 200px 0 } }
+.shimmer { background: linear-gradient(90deg, transparent, rgba(255,255,255,.06), transparent); background-size: 200px 100%; animation: shimmer 1.4s linear infinite; }

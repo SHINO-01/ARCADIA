@@ -11,6 +11,8 @@ class WorldSpawner {
   void clear(World &world);
   void setCropState(Section &c);   // resize/recolour the bed box to reflect its state
   void setWeeds(Section &c, bool on);
+  // Paint the world model's state: crop height (m), colour (0-1 RGB) and the weed marker.
+  void setVisual(Section &c, double height, double r, double g, double b, bool weeds);
 
  private:
   webots::Supervisor &sup_;

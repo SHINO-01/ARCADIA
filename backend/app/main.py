@@ -10,6 +10,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api import chaos, farms, fleet, incidents, missions, telemetry, world
 from app.bridge.manager import bridge
 from app.core.config import settings
+from app.services import fleet as fleet_svc
+from app.services.world_engine import world as world_engine
 from app.core.logging import configure_logging
 
 configure_logging()
@@ -20,9 +22,15 @@ log = logging.getLogger("arcadia")
 async def lifespan(app: FastAPI):
     log.info("Starting %s (bridge_mode=%s)", settings.app_name, settings.bridge_mode)
     await bridge.start()
+    world_engine.start()
+    try:
+        await world_engine.load(await fleet_svc.get_active_farm_id())
+    except Exception:  # noqa: BLE001 - never block startup on the world model
+        log.exception("world model failed to load")
     try:
         yield
     finally:
+        await world_engine.stop()
         await bridge.stop()
 
 

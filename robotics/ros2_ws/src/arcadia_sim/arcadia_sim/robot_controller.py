@@ -152,6 +152,12 @@ class ArcadiaRobot(Node):
             except json.JSONDecodeError:
                 pass
             return
+        if msg.kind == "set_irradiance" and not msg.robot_id:  # broadcast from the weather model
+            try:
+                self.irradiance = float(json.loads(msg.payload_json or "{}").get("irradiance", 1.0))
+            except (ValueError, json.JSONDecodeError):
+                pass
+            return
         if msg.robot_id != self.robot_id:
             return
         try:

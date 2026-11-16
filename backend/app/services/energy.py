@@ -48,11 +48,18 @@ class MicrogridModel:
 
 
 def tick(infra: list[dict], fleet: dict[str, dict], dt: float, model: MicrogridModel) -> list[dict]:
-    """Advance every dock by dt seconds. Returns the new per-dock readings (also cached in Redis)."""
-    hour = sim_hour()
-    irr = irradiance(hour)
-    wind = model.step_wind(dt)
+    """Advance every dock by dt seconds. Returns the new per-dock readings (also cached in Redis).
+    Sun and wind come from the agronomic world model's weather when it is running."""
     r = get_sync_redis()
+    now = r.get("arcadia:world:now")
+    if now:
+        w = json.loads(now)
+        hour, irr = float(w["hour"]), float(w["irradiance"])
+        wind = model.wind = 0.7 * model.wind + 0.3 * float(w.get("wind", model.wind))
+    else:
+        hour = sim_hour()
+        irr = irradiance(hour)
+        wind = model.step_wind(dt)
     out = []
     for site in infra:
         if not site["kind"].endswith("dock"):
