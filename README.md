@@ -46,6 +46,10 @@ make robotics-build && make sim                           # Webots + fleet + ros
 make seed-demo                                            # or set up a farm in the dashboard
 ```
 
+Day to day, `docker compose up -d` starts the whole web stack (dashboard included, at
+http://localhost:8080) and `docker compose down` stops it; `make up` does the same but rebuilds the
+images first, which is needed after pulling new code.
+
 Without `make sim` the backend's **headless digital twin** drives the whole platform (same wire
 protocol), and the bridge hot-swaps to ROS 2 as soon as rosbridge on :9090 becomes reachable.
 
