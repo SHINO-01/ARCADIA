@@ -80,12 +80,65 @@ The dashboard's status bar shows which simulator is driving the farm: **headless
 **ROS 2 · Webots**. The backend switches to Webots by itself when `make sim` comes up and back to the
 headless twin when it stops. `make sim-headless` runs Webots minimised without rendering.
 
-**Optional sim agent:** `make sim-agent-install` installs a systemd user service that starts `make sim`
+### Webots by hand (without the sim agent)
+
+This is the default unless you ran `make sim-agent-install` (`setup.sh --full` installs the agent; remove
+it with `make sim-agent-uninstall` to work this way).
+
+1. **Install once** (Ubuntu x86-64 desktop):
+
+   ```bash
+   sudo bash robotics/scripts/install_ros2_apt.sh        # ROS 2 Lyrical from apt
+   bash robotics/scripts/install_webots_tarball.sh       # Webots R2025a -> ~/opt/webots
+   make robotics-build                                   # colcon build of robotics/ros2_ws
+   ```
+
+   Use the tarball, not the Webots snap: on GNOME/Wayland the snap cannot open the display. Webots is
+   looked up in `$WEBOTS_HOME`, then `~/opt/webots`; the Makefile sets `WEBOTS_HOME=~/opt/webots`.
+   Run `make robotics-build` again after changing anything under `robotics/`.
+
+2. **Start the web stack first**, so the fleet can fetch the farm when it comes up:
+
+   ```bash
+   docker compose up -d
+   ```
+
+3. **Start the simulation** in a second terminal (keep it open; it shows the fleet's log):
+
+   ```bash
+   make sim                  # Webots window + supervisor + robot controllers + rosbridge :9090 + diagnostics
+   make sim-headless         # the same with Webots minimised and not rendering (lighter)
+   ```
+
+   Webots opens the farm within ~15 s and the dashboard's status bar changes from **headless twin**
+   to **ROS 2 · Webots**. If the dashboard runs on another port, pass it on: `make sim API_URL=http://localhost:8081/api`.
+   The launch can also be run directly, with all its options:
+
+   ```bash
+   source /opt/ros/lyrical/setup.bash && source robotics/ros2_ws/install/setup.bash
+   WEBOTS_HOME=~/opt/webots ros2 launch arcadia_bringup arcadia.launch.py \
+     gui:=true mode:=realtime stream_port:=1234 api_url:=http://localhost:8080/api
+   ```
+
+4. **Stop it** with `Ctrl+C` in that terminal (Webots, the controllers and rosbridge all exit). The
+   dashboard falls back to the headless twin. Stop the web stack afterwards with `docker compose down`;
+   stopping the web stack first is fine too, the fleet just waits for it.
+
+If Webots does not appear: check `pgrep -x webots-bin`; on Wayland the launch finds the Xwayland
+cookie itself, but from a non-desktop shell (SSH, a service) export `DISPLAY=:0` first. Only one
+simulation may run at a time; a second `make sim` (or the sim agent next to a manual one) would start
+a second fleet.
+
+### Optional: the sim agent
+
+`make sim-agent-install` installs a systemd user service that starts `make sim`
 when `docker compose up -d` brings the stack up and stops it once the stack has been down for 45 s,
 so the single Docker command runs the whole project. `ARCADIA_SIM_GUI=false` in `.env` keeps Webots
 minimised; `make sim-agent-logs` follows it.
 
-**Native backend for development** (instead of the API/worker containers; do not run both):
+### Native backend for development
+
+Instead of the API/worker containers (do not run both):
 
 ```bash
 docker compose up -d postgres redis
