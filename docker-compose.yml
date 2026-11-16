@@ -36,8 +36,10 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
-      - api
-      - web
+      api:
+        condition: service_healthy
+      web:
+        condition: service_healthy
     restart: unless-stopped
 
   api:
@@ -78,13 +80,20 @@ services:
       api:
         condition: service_healthy
 
-  web:
+  web:  # the React dashboard (static build served by Caddy); always started by `docker compose up -d`
+    image: arcadia-web:latest
     build:
       context: ./frontend
       args:
         VITE_MAPBOX_TOKEN: ${VITE_MAPBOX_TOKEN:-}
         VITE_WEBOTS_STREAM_URL: ${VITE_WEBOTS_STREAM_URL:-}
     mem_limit: 128m
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1/"]
+      interval: 15s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
     restart: unless-stopped
 
   postgres:
