@@ -17,6 +17,10 @@ ARCADIA/
 └── scripts/        dev_backend.sh (native backend), seed_demo.py (demo farm), sim_agent.sh (optional: sim follows the stack)
 ```
 
+**How it works:** [docs/ENGINEERING.md](docs/ENGINEERING.md) explains the whole system, from the Webots supervisor and robot
+controllers to how a click in the dashboard reaches a wheel, with an animated system diagram in
+[docs/arcadia-system.drawio](docs/arcadia-system.drawio).
+
 ## Requirements
 
 | Part | Needs |
