@@ -281,6 +281,7 @@ while (sup_.step(32) != -1 && rclcpp::ok()) {
   for (auto &[id, r] : world_.robots) {
     if (r.type == "scout_uav" && altitude > 1.5) vision_.scan(r, sensor_radius);  // mock CV
     if (r.towing && r.tow_attached) dragTowed(r);                                  // tow mechanics
+    if (r.pinned) holdPinned(r); else if (!towing && !towed) terrainHazard(r);    // bogging down
   }
 }
 ```
@@ -334,10 +335,18 @@ anomaly detectors realistic, imperfect data, at zero GPU cost.
 | Event | Reaction |
 |---|---|
 | `robot_online` | A controller that (re)started after the farm was spawned missed `world_load`: the supervisor **replays** the current world on `/arcadia/command`, so the robot learns its home dock, the docks and the track graph. |
-| `tow_attached` | Starts dragging the target robot: every step it is placed 2.1 m behind the AGV, aligned with it, physics reset. |
+| `tow_attached` | Unpins the target (the winch frees it) and starts dragging it: every step it is placed 2.1 m behind the AGV, aligned with it, physics reset. |
 | `tow_complete` | Stops dragging; the towed robot is left where it was delivered (the repair station apron). |
-| `fault_detected` with `stuck_terrain` | Records the chassis position so it can be pinned in place. See section 16 for a gap here. |
+| `fault_detected` with `stuck_terrain` | Records the chassis position; from then on the supervisor holds the chassis there every step until the tow arrives. |
 | `fault_cleared` | Unpins; after a recharge the unit is left on the pad it was serviced at. |
+
+**Terrain entrapment.** The world config lists waterlogged low spots on the tracks (`hazards`). When the
+weather model reports wet tracks (more than 6 mm of rain that day, or over 5 % of beds waterlogged), a
+ground robot driving faster than 0.2 m/s through a hazard has about a 4 % chance per second of bogging
+down. The supervisor then publishes a `chaos` command with `stuck_terrain` for that robot, exactly as the
+Chaos Engine would, and the normal fault path follows: the controller stops the wheels, reports
+`fault_detected`, and the supervisor pins the chassis until the AGV's winch attaches. A robot that has
+just been freed gets a 90 s grace period, and a tow train (the AGV and the unit it drags) never bogs down.
 
 **Why the supervisor does not own the crop.** Earlier versions grew crops inside the supervisor.
 The current design moved all agronomy to the backend world model, so the supervisor only renders
@@ -848,11 +857,13 @@ Frontend: `npx tsc -b` and `npx oxlint src`. The Webots stack is verified by run
 
 ## 16. Known limitations and open gaps
 
-* **Terrain entrapment is not wired up in Webots.** The supervisor has `terrainHazard()` (random
-  bogging-down of ground robots crossing waterlogged spots after real rain) and `holdPinned()`
-  (holding a bogged chassis still), but its main loop never calls them. In Webots, `stuck_terrain`
-  therefore only happens when the Chaos Engine injects it, and the chassis is stopped by the controller
-  (wheels at zero) rather than pinned by the supervisor. The headless twin is unaffected.
+* **North Field's track network is fragmented.** After the imagery-driven adaptive re-layout, the
+  headland ring is cut into pieces (most likely where road corridors and obstacles cross it), and lane
+  ends stop short of it (median gap 30 m). The network splits into 8+ components; from the yard only
+  77 of 318 sections can be reached by a ground robot, and none of the three terrain hazards. The
+  layout code needs to guarantee one connected network (joining zone tracks to the headland and
+  bridging components) before re-planning the farm. `test_twin.py` does not catch it because its
+  synthetic farm is a simple shape.
 * **No Nav2 / MoveIt 2** (RAM budget): navigation is the pure-pursuit follower above with stop-and-wait
   obstacle handling; the harvester's arm is a dwell time.
 * **The UAV is kinematic**: no aerodynamics; its controller sets its pose.

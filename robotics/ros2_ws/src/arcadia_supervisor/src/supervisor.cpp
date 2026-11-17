@@ -5,7 +5,8 @@
 //  * renders the agronomic world model (field_state, weather) and runs the proximity mock CV (section_seen)
 //  * reacts to robot work events (seeded / weeded / harvested) by mutating the crops
 //  * implements tow mechanics: a towed robot is dragged behind the Logistics AGV and left at the drop-off
-//  * broadcasts solar irradiance (compressed day cycle) so solar skins trickle-charge
+//  * terrain entrapment: after real rain (the weather model's wet_tracks), a ground vehicle crossing a
+//    waterlogged hazard may bog down; its chassis is pinned until the AGV's winch frees it
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -50,8 +51,11 @@ class ArcadiaSupervisor : public rclcpp::Node {
         if (r.type == "scout_uav") {
           const double *p = r.node->getPosition();
           if (p[2] > 1.5) vision_.scan(r, sensorRadius(r), sim_t_);
+          continue;
         }
         if (!r.towing.empty() && r.tow_attached) dragTowed(r);
+        if (r.pinned) holdPinned(r);                                   // bogged down: chassis stays put
+        else if (r.towing.empty() && !beingTowed(r.id)) terrainHazard(r);  // tow trains never bog down
       }
     }
   }
@@ -191,6 +195,8 @@ class ArcadiaSupervisor : public rclcpp::Node {
     if (e.kind == "tow_attached") {
       auto it = world_.robots.find(e.robot_id);
       if (it != world_.robots.end()) { it->second.towing = p.value("target", ""); it->second.tow_attached = true; }
+      auto tgt = world_.robots.find(p.value("target", ""));
+      if (tgt != world_.robots.end()) tgt->second.pinned = false;  // the winch frees it
     } else if (e.kind == "tow_complete") {
       auto it = world_.robots.find(e.robot_id);
       if (it != world_.robots.end()) {
@@ -214,10 +220,13 @@ class ArcadiaSupervisor : public rclcpp::Node {
         it->second.pinned = true; it->second.pin_x = rp[0]; it->second.pin_y = rp[1]; it->second.pin_yaw = std::atan2(o[3], o[0]);
         RCLCPP_INFO(get_logger(), "%s bogged down at (%.1f, %.1f) - chassis pinned until towed", e.robot_id.c_str(), rp[0], rp[1]);
       }
-    } else if (e.kind == "tow_attached") {
-      auto tgt = world_.robots.find(p.value("target", ""));
-      if (tgt != world_.robots.end()) tgt->second.pinned = false;  // the winch frees it
     }
+  }
+
+  bool beingTowed(const std::string &id) const {
+    for (const auto &[aid, a] : world_.robots)
+      if (a.tow_attached && a.towing == id) return true;
+    return false;
   }
 
   void dragTowed(arcadia::RobotRef &agv) {
